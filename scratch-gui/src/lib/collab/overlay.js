@@ -110,6 +110,16 @@ class Overlay {
 
     _updateCursors () {
         if (!this.cursorLayer) return;
+        // Nothing to draw and nothing drawn — skip all layout reads this frame.
+        let anyCursor = false;
+        for (const p of this.peers.values()) {
+            if (p.cursor) {
+                anyCursor = true;
+                break;
+            }
+        }
+        if (!anyCursor && !this.cursorLayer.childElementCount) return;
+
         const workspace = this.getWorkspace();
         const localSprite = this.localSpriteName();
 

@@ -260,7 +260,10 @@ const wrapVm = vm => {
     const originalPostSpriteInfo = vm.postSpriteInfo.bind(vm);
     vm.postSpriteInfo = data => {
         const result = originalPostSpriteInfo(data);
-        if (state.active && !state.applyingRemote && hasPeers()) {
+        // While the project is RUNNING each machine simulates independently —
+        // syncing positions mid-game makes the simulations fight (rubber-band
+        // "lag"). Positions converge naturally when play stops.
+        if (state.active && !state.applyingRemote && !state.projectRunning && hasPeers()) {
             const target = editingTargetName();
             if (target) {
                 state.pendingSpriteInfo = {type: 'sprite-info', target, data};
@@ -364,10 +367,22 @@ const wrapVm = vm => {
     };
 
     vm.runtime.on('PROJECT_RUN_START', () => {
+        state.projectRunning = true;
         if (state.active && !state.applyingRemote) sendPresence({status: '▶ playing'});
     });
     vm.runtime.on('PROJECT_RUN_STOP', () => {
+        state.projectRunning = false;
         if (state.active && !state.applyingRemote) sendPresence({status: 'here'});
+    });
+
+    // Frame interpolation: render at the display's refresh rate while game
+    // logic keeps its designed tick (30fps for most Scratch games) — smooth
+    // motion without changing gameplay speed. Loading a project can reset
+    // runtime options, so re-assert on every load.
+    vm.runtime.on('PROJECT_LOADED', () => {
+        try {
+            vm.setInterpolation(true);
+        } catch (e) { /* older vm */ }
     });
 };
 
@@ -499,6 +514,7 @@ const applyBlockEvent = msg => {
 };
 
 const applySpriteInfo = msg => {
+    if (state.projectRunning) return; // don't fight the running simulation
     const target = findTargetByName(msg.target);
     if (!target) return;
     const d = msg.data || {};
