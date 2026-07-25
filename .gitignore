@@ -1,0 +1,17 @@
+# dependencies / build output
+node_modules/
+scratch-gui/build/
+scratch-gui/dist/
+scratch-gui/translations/
+
+# server data — rooms, saved projects, users are runtime state, never source
+collab-server/rooms/
+collab-server/projects/
+collab-server/users.json
+
+# deployment target config (host names, users) stays local
+.deploy.env
+
+# local scratch files
+*.log
+collab-integration.patch
