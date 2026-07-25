@@ -90,12 +90,16 @@ simulates independently; only the values you send are shared.
 |---|---|
 | `broadcast game message [name] with [value]` | Send a named message + value to everyone in the room (including yourself) |
 | `when I receive game message [name]` | Hat — runs when that message arrives |
-| `game message value` | The value from the most recent game message |
+| `game message name` / `game message value` | Name and value of the most recent game message |
 | `set shared variable [name] to [value]` | Last-write-wins room variable (synced) |
+| `change shared variable [name] by [value]` | Atomic-ish numeric bump (read-modify-write locally, then sync) |
 | `shared variable [name]` | Read a shared variable (late joiners get current values) |
 | `my player name` | Your collab login name |
 | `other players` | Comma-joined names of everyone else in the room |
+| `player count` | You + everyone else currently in the room |
 | `when a player joins` / `when a player leaves` | Hats for presence changes |
+| `last player joined` / `last player left` | Names from the most recent join/leave |
+| `connected to room?` | Whether the collab socket is live |
 
 ### Tiny two-player example
 
@@ -109,7 +113,7 @@ when green flag clicked
 set shared variable [score] to [0]
 
 when I receive game message [bump]
-set shared variable [score] to ((shared variable [score]) + (game message value))
+change shared variable [score] by (game message value)
 say (join [Score: ] (shared variable [score]))
 
 when this sprite clicked

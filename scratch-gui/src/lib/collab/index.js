@@ -650,21 +650,33 @@ const netHandlers = {};
 // Last-write-wins cache so extensions that bind after welcome still see
 // current shared variables (late load of the Together category).
 let cachedGameVars = Object.create(null);
+// Cached peer-name list — rebuilt only on join/leave, not every reporter tick.
+let cachedPeerNames = [];
+let cachedPeerNamesStr = '';
+
+const rebuildPeerCache = () => {
+    cachedPeerNames = [...overlay.peers.values()].map(p => p.name);
+    cachedPeerNamesStr = cachedPeerNames.join(', ');
+};
 
 const netEmit = (type, msg) => {
-    (netHandlers[type] || []).forEach(cb => {
+    const list = netHandlers[type];
+    if (!list || !list.length) return;
+    for (let i = 0; i < list.length; i++) {
         try {
-            cb(msg);
+            list[i](msg);
         } catch (e) {
             // eslint-disable-next-line no-console
             console.error('[collab] ScratchTogetherNet handler error', type, e);
         }
-    });
+    }
 };
 
 const installNetBridge = () => {
     if (typeof window === 'undefined') return;
+    if (window.ScratchTogetherNet && window.ScratchTogetherNet.__st) return;
     window.ScratchTogetherNet = {
+        __st: true,
         send (msg) {
             if (!state.active) return;
             // Mirror outbound shared-var writes into the local cache immediately
@@ -682,7 +694,7 @@ const installNetBridge = () => {
             if (type === 'game-state') {
                 queueMicrotask(() => {
                     try {
-                        cb({vars: Object.assign(Object.create(null), cachedGameVars)});
+                        cb({vars: cachedGameVars});
                     } catch (e) { /* subscriber error */ }
                 });
             }
@@ -697,7 +709,10 @@ const installNetBridge = () => {
             return (client.session && client.session.name) || '';
         },
         get peers () {
-            return [...overlay.peers.values()].map(p => p.name);
+            return cachedPeerNames;
+        },
+        get peersText () {
+            return cachedPeerNamesStr;
         },
         get connected () {
             return !!(state.active && client.connected);
@@ -707,10 +722,16 @@ const installNetBridge = () => {
                 (client.session && client.session.room) || '';
         },
         get sharedVars () {
-            return Object.assign(Object.create(null), cachedGameVars);
+            return cachedGameVars;
         }
     };
+    try {
+        window.dispatchEvent(new CustomEvent('ScratchTogetherNetReady'));
+    } catch (e) { /* old browsers */ }
 };
+
+// Available before login so the Together extension can bind immediately.
+installNetBridge();
 
 // ------------------------------------------------------------- wiring up ---
 
@@ -730,7 +751,8 @@ const wireSocket = () => {
         client.send({type: 'presence', sprite: editingTargetName(), status: 'here'});
         // Seed Together shared variables for late joiners / reconnects.
         cachedGameVars = Object.assign(Object.create(null), msg.gameVars || {});
-        netEmit('game-state', {vars: Object.assign(Object.create(null), cachedGameVars)});
+        rebuildPeerCache();
+        netEmit('game-state', {vars: cachedGameVars});
     });
     client.on('disconnected', () => {
         overlay.setConnected(false);
@@ -738,6 +760,7 @@ const wireSocket = () => {
     });
     client.on('peer-joined', msg => {
         overlay.addPeer(msg.peer.id, msg.peer.name, msg.peer.color);
+        rebuildPeerCache();
         overlay.toast(`👋 ${msg.peer.name} joined!`, msg.peer.color);
         // Re-announce so the newcomer immediately sees our sprite/status.
         client.send({
@@ -749,6 +772,7 @@ const wireSocket = () => {
     });
     client.on('peer-left', msg => {
         overlay.removePeer(msg.id);
+        rebuildPeerCache();
         overlay.toast(`${msg.name} left`, '#8a8fa3');
         netEmit('peer-left', msg);
     });
@@ -783,7 +807,7 @@ const init = async vm => {
     if (state.initialized) return;
     state.initialized = true;
     state.vm = vm;
-    installNetBridge();
+    installNetBridge(); // idempotent — already installed at module load
 
     // Register before the login modal so we can't miss the event while the user types.
     const projectLoaded = new Promise(resolve => vm.runtime.once('PROJECT_LOADED', resolve));
