@@ -640,6 +640,78 @@ const applyRemoteBitmap = msg => {
     }
 };
 
+// -------------------------------------------- multiplayer game bridge ---
+// Unsandboxed Together extension talks ONLY to this object. Game traffic
+// must not go through editor-sync paths gated by projectRunning — both
+// machines simulate independently and exchange game messages while green-flag
+// scripts are running.
+
+const netHandlers = {};
+// Last-write-wins cache so extensions that bind after welcome still see
+// current shared variables (late load of the Together category).
+let cachedGameVars = Object.create(null);
+
+const netEmit = (type, msg) => {
+    (netHandlers[type] || []).forEach(cb => {
+        try {
+            cb(msg);
+        } catch (e) {
+            // eslint-disable-next-line no-console
+            console.error('[collab] ScratchTogetherNet handler error', type, e);
+        }
+    });
+};
+
+const installNetBridge = () => {
+    if (typeof window === 'undefined') return;
+    window.ScratchTogetherNet = {
+        send (msg) {
+            if (!state.active) return;
+            // Mirror outbound shared-var writes into the local cache immediately
+            // so reporters work before the (non-echoed) round-trip.
+            if (msg && msg.type === 'game' && msg.action === 'var') {
+                const key = String(msg.name == null ? '' : msg.name);
+                if (key) cachedGameVars[key] = msg.value == null ? '' : msg.value;
+            }
+            client.send(msg);
+        },
+        on (type, cb) {
+            if (typeof cb !== 'function') return () => {};
+            (netHandlers[type] = netHandlers[type] || []).push(cb);
+            // Replay cached shared vars to late subscribers.
+            if (type === 'game-state') {
+                queueMicrotask(() => {
+                    try {
+                        cb({vars: Object.assign(Object.create(null), cachedGameVars)});
+                    } catch (e) { /* subscriber error */ }
+                });
+            }
+            return () => {
+                const list = netHandlers[type];
+                if (!list) return;
+                const i = list.indexOf(cb);
+                if (i >= 0) list.splice(i, 1);
+            };
+        },
+        get playerName () {
+            return (client.session && client.session.name) || '';
+        },
+        get peers () {
+            return [...overlay.peers.values()].map(p => p.name);
+        },
+        get connected () {
+            return !!(state.active && client.connected);
+        },
+        get room () {
+            return (overlay.self && overlay.self.room) ||
+                (client.session && client.session.room) || '';
+        },
+        get sharedVars () {
+            return Object.assign(Object.create(null), cachedGameVars);
+        }
+    };
+};
+
 // ------------------------------------------------------------- wiring up ---
 
 const wireSocket = () => {
@@ -656,8 +728,14 @@ const wireSocket = () => {
         }
         state.lastPresence = {status: null, sprite: null, sentAt: 0};
         client.send({type: 'presence', sprite: editingTargetName(), status: 'here'});
+        // Seed Together shared variables for late joiners / reconnects.
+        cachedGameVars = Object.assign(Object.create(null), msg.gameVars || {});
+        netEmit('game-state', {vars: Object.assign(Object.create(null), cachedGameVars)});
     });
-    client.on('disconnected', () => overlay.setConnected(false));
+    client.on('disconnected', () => {
+        overlay.setConnected(false);
+        netEmit('disconnected', {});
+    });
     client.on('peer-joined', msg => {
         overlay.addPeer(msg.peer.id, msg.peer.name, msg.peer.color);
         overlay.toast(`👋 ${msg.peer.name} joined!`, msg.peer.color);
@@ -667,10 +745,12 @@ const wireSocket = () => {
             sprite: state.lastPresence.sprite || editingTargetName(),
             status: state.lastPresence.status || 'here'
         });
+        netEmit('peer-joined', msg);
     });
     client.on('peer-left', msg => {
         overlay.removePeer(msg.id);
         overlay.toast(`${msg.name} left`, '#8a8fa3');
+        netEmit('peer-left', msg);
     });
     client.on('snapshot', applySnapshot);
     client.on('projects', msg => overlay.setProjects(msg.projects));
@@ -687,6 +767,14 @@ const wireSocket = () => {
         msg.from,
         msg.hide ? null : {x: msg.x, y: msg.y, sprite: msg.sprite}
     ));
+    // Together extension traffic — never gated by projectRunning.
+    client.on('game', msg => {
+        if (msg && msg.action === 'var') {
+            const key = String(msg.name == null ? '' : msg.name);
+            if (key) cachedGameVars[key] = msg.value == null ? '' : msg.value;
+        }
+        netEmit('game', msg);
+    });
 };
 
 // ------------------------------------------------------------- public API ---
@@ -695,6 +783,7 @@ const init = async vm => {
     if (state.initialized) return;
     state.initialized = true;
     state.vm = vm;
+    installNetBridge();
 
     // Register before the login modal so we can't miss the event while the user types.
     const projectLoaded = new Promise(resolve => vm.runtime.once('PROJECT_LOADED', resolve));
