@@ -28,6 +28,8 @@ const state = {
     spriteInfoTimer: null,
     lastPresence: {status: null, sprite: null, sentAt: 0},
     lastSnapshotB64: null, // dedup — skip re-broadcasting identical project state
+    localTab: 0, // 0 code / 1 costumes / 2 sounds
+    pendingRemotePaint: new Map(), // deferred remote paint edits while locally painting
     initialized: false
 };
 
@@ -245,8 +247,13 @@ const wrapVm = vm => {
             const target = editingTargetName();
             if (target && hasPeers()) {
                 client.send({
-                    type: 'vm-action', action: 'updateSvg',
-                    target, costumeIndex, svg, rotationCenterX, rotationCenterY
+                    type: 'vm-action',
+                    action: 'updateSvg',
+                    target,
+                    costumeIndex,
+                    svg,
+                    rotationCenterX,
+                    rotationCenterY
                 });
                 sendPresence({status: '🎨 painting', sprite: target});
             }
@@ -262,12 +269,18 @@ const wrapVm = vm => {
             const target = editingTargetName();
             if (target && hasPeers()) {
                 state.pendingBitmap = {
-                    type: 'vm-action', action: 'updateBitmap',
-                    target, costumeIndex,
-                    width: bitmap.width, height: bitmap.height,
-                    sourceWidth: bitmap.sourceWidth, sourceHeight: bitmap.sourceHeight,
+                    type: 'vm-action',
+                    action: 'updateBitmap',
+                    target,
+                    costumeIndex,
+                    width: bitmap.width,
+                    height: bitmap.height,
+                    sourceWidth: bitmap.sourceWidth,
+                    sourceHeight: bitmap.sourceHeight,
                     data: b64FromBuffer(bitmap.data.buffer),
-                    rotationCenterX, rotationCenterY, bitmapResolution
+                    rotationCenterX,
+                    rotationCenterY,
+                    bitmapResolution
                 };
                 clearTimeout(state.bitmapTimer);
                 state.bitmapTimer = setTimeout(() => {
@@ -328,8 +341,55 @@ const onWorkspaceMouseMove = evt => {
         if (!ctm) return;
         const pt = new DOMPoint(evt.clientX, evt.clientY).matrixTransform(ctm.inverse());
         client.send({type: 'cursor', x: pt.x, y: pt.y, sprite: editingTargetName()});
+        state.cursorShown = true;
     } catch (e) { /* workspace mid-teardown */ }
 };
+
+// Which editor tab is active locally (0 code / 1 costumes / 2 sounds)?
+// Read from the DOM so we don't have to thread redux state out of React.
+const currentTabIndex = () => {
+    const tabs = [...document.querySelectorAll('ul[role="tablist"] li[role="tab"]')].slice(0, 3);
+    const idx = tabs.findIndex(t => t.getAttribute('aria-selected') === 'true');
+    return idx === -1 ? 0 : idx;
+};
+
+const TAB_STATUS = ['here', '🎨 painting', '🎵 sounds'];
+
+// Remote paint edits for the costume the local user is actively painting are
+// deferred — applying them mid-edit resets scratch-paint's working state
+// (color picker included). They flush as soon as the tab changes.
+const flushPendingPaint = () => {
+    const queued = [...state.pendingRemotePaint.values()];
+    state.pendingRemotePaint.clear();
+    queued.forEach(msg => applyVmAction(msg));
+};
+
+// 1s housekeeping: cursor-hide when our blocks view disappears, and tab
+// presence so peers see "🎨 painting" the moment someone opens that editor.
+setInterval(() => {
+    if (!state.active) return;
+
+    const tab = currentTabIndex();
+    if (tab !== state.localTab) {
+        const wasPainting = state.localTab === 1;
+        state.localTab = tab;
+        sendPresence({status: TAB_STATUS[tab] || 'here', sprite: editingTargetName()});
+        if (wasPainting) flushPendingPaint();
+    }
+
+    if (!state.cursorShown) return;
+    let workspaceVisible = false;
+    try {
+        if (state.workspace && !document.hidden) {
+            const rect = state.workspace.getParentSvg().getBoundingClientRect();
+            workspaceVisible = rect.width > 10 && rect.height > 10;
+        }
+    } catch (e) { /* mid-teardown */ }
+    if (!workspaceVisible) {
+        state.cursorShown = false;
+        if (hasPeers()) client.send({type: 'cursor', hide: true});
+    }
+}, 1000);
 
 // ------------------------------------------------- incoming: application ---
 
@@ -404,25 +464,19 @@ const applyVmAction = msg => {
             overlay.toast(`▶ ${msg.fromName} pressed the green flag!`, msg.color);
         } else if (msg.action === 'stopAll') {
             state.vm.stopAll();
-        } else if (msg.action === 'updateSvg') {
-            // _updateSvg takes the costume object directly — no editingTarget games.
-            const target = findTargetByName(msg.target);
-            const costume = target && target.getCostumes()[msg.costumeIndex];
-            if (costume) {
-                state.vm._updateSvg(costume, msg.svg, msg.rotationCenterX, msg.rotationCenterY);
+        } else if (msg.action === 'updateSvg' || msg.action === 'updateBitmap') {
+            // Never stomp an open paint editor: applying a remote edit to the
+            // sprite the local user is painting resets scratch-paint's working
+            // state (selection, color picker). Defer until they leave the tab.
+            if (state.localTab === 1 && msg.target === editingTargetName()) {
+                state.pendingRemotePaint.set(`${msg.target}|${msg.costumeIndex}|${msg.action}`, msg);
+                state.applyingRemote = false;
+                return;
             }
-        } else if (msg.action === 'updateBitmap') {
-            const target = findTargetByName(msg.target);
-            const costume = target && target.getCostumes()[msg.costumeIndex];
-            if (costume) {
-                const bytes = new Uint8ClampedArray(bufferFromB64(msg.data));
-                const imageData = new ImageData(bytes, msg.width, msg.height);
-                imageData.sourceWidth = msg.sourceWidth;
-                imageData.sourceHeight = msg.sourceHeight;
-                state.vm._updateBitmap(
-                    costume, imageData,
-                    msg.rotationCenterX, msg.rotationCenterY, msg.bitmapResolution
-                );
+            if (msg.action === 'updateSvg') {
+                applyRemoteSvg(msg);
+            } else {
+                applyRemoteBitmap(msg);
             }
         }
     } catch (e) {
@@ -430,6 +484,30 @@ const applyVmAction = msg => {
         console.error('[collab] vm-action failed', e, msg.action);
     } finally {
         state.applyingRemote = false;
+    }
+};
+
+const applyRemoteSvg = msg => {
+    // _updateSvg takes the costume object directly — no editingTarget games.
+    const target = findTargetByName(msg.target);
+    const costume = target && target.getCostumes()[msg.costumeIndex];
+    if (costume) {
+        state.vm._updateSvg(costume, msg.svg, msg.rotationCenterX, msg.rotationCenterY);
+    }
+};
+
+const applyRemoteBitmap = msg => {
+    const target = findTargetByName(msg.target);
+    const costume = target && target.getCostumes()[msg.costumeIndex];
+    if (costume) {
+        const bytes = new Uint8ClampedArray(bufferFromB64(msg.data));
+        const imageData = new ImageData(bytes, msg.width, msg.height);
+        imageData.sourceWidth = msg.sourceWidth;
+        imageData.sourceHeight = msg.sourceHeight;
+        state.vm._updateBitmap(
+            costume, imageData,
+            msg.rotationCenterX, msg.rotationCenterY, msg.bitmapResolution
+        );
     }
 };
 
@@ -476,7 +554,10 @@ const wireSocket = () => {
     client.on('sprite-info', applySpriteInfo);
     client.on('vm-action', applyVmAction);
     client.on('presence', msg => overlay.setPeerPresence(msg.from, msg));
-    client.on('cursor', msg => overlay.setPeerCursor(msg.from, {x: msg.x, y: msg.y, sprite: msg.sprite}));
+    client.on('cursor', msg => overlay.setPeerCursor(
+        msg.from,
+        msg.hide ? null : {x: msg.x, y: msg.y, sprite: msg.sprite}
+    ));
 };
 
 // ------------------------------------------------------------- public API ---

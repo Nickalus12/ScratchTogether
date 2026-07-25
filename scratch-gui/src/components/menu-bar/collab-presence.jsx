@@ -11,6 +11,7 @@ const statusIcon = status => {
     if (!status || status === 'here') return '🟢';
     if (status.indexOf('playing') !== -1) return '▶️';
     if (status.indexOf('painting') !== -1) return '🎨';
+    if (status.indexOf('sounds') !== -1) return '🎵';
     return '✏️';
 };
 
@@ -219,8 +220,13 @@ class CollabPresence extends React.Component {
                             }}
                             placeholder="Name this project…"
                             style={{
-                                flex: 1, minWidth: 0, padding: '5px 8px', fontSize: '12px',
-                                border: '1px solid #d9dce5', borderRadius: '6px', outline: 'none'
+                                flex: 1,
+                                minWidth: 0,
+                                padding: '5px 8px',
+                                fontSize: '12px',
+                                border: '1px solid #d9dce5',
+                                borderRadius: '6px',
+                                outline: 'none'
                             }}
                             type="text"
                             value={this.state.saveName}
@@ -228,9 +234,14 @@ class CollabPresence extends React.Component {
                         <button
                             onClick={this.handleSave}
                             style={{
-                                border: 'none', background: '#4caf50', color: '#fff',
-                                borderRadius: '6px', padding: '5px 10px', fontSize: '12px',
-                                fontWeight: 'bold', cursor: 'pointer'
+                                border: 'none',
+                                background: '#4caf50',
+                                color: '#fff',
+                                borderRadius: '6px',
+                                padding: '5px 10px',
+                                fontSize: '12px',
+                                fontWeight: 'bold',
+                                cursor: 'pointer'
                             }}
                         >
                             {'💾 Save'}
@@ -251,10 +262,15 @@ class CollabPresence extends React.Component {
                                 <button
                                     onClick={() => this.handleOpenProject(p.id)}
                                     style={{
-                                        border: 'none', borderRadius: '6px', padding: '4px 9px',
-                                        fontSize: '11px', fontWeight: 'bold', cursor: 'pointer',
+                                        border: 'none',
+                                        borderRadius: '6px',
+                                        padding: '4px 9px',
+                                        fontSize: '11px',
+                                        fontWeight: 'bold',
+                                        cursor: 'pointer',
                                         background: this.state.confirmOpenId === p.id ? '#ff9800' : '#4c97ff',
-                                        color: '#fff', flexShrink: 0
+                                        color: '#fff',
+                                        flexShrink: 0
                                     }}
                                 >
                                     {this.state.confirmOpenId === p.id ? 'For everyone?' : 'Open'}
