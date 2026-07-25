@@ -136,7 +136,8 @@ class CollabClient {
     // Reconnect immediately when the tab comes back (laptop sleep / ZeroTier blip).
     resumeIfNeeded () {
         if (this._closedByUser || !this.session) return;
-        if (this.connected && this.ws && this.ws.readyState === 1) return;
+        // Don't kill a healthy open socket OR an in-flight CONNECTING handshake.
+        if (this.ws && (this.ws.readyState === 0 || this.ws.readyState === 1)) return;
         this._backoff = 1000;
         this._open();
     }
@@ -166,7 +167,10 @@ class CollabClient {
             return;
         }
 
-        if (this.ws && this.ws.readyState === 1) {
+        // Only treat the socket as writable after welcome — frames sent between
+        // onopen and welcome are dropped server-side (no room yet) and would
+        // bypass the reliable queue.
+        if (this.connected && this.ws && this.ws.readyState === 1) {
             // Under backpressure, drop lossy traffic so block edits keep flowing.
             if (lossy && this.ws.bufferedAmount > MAX_BUFFERED) return;
             try {

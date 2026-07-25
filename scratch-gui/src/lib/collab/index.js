@@ -23,7 +23,6 @@ const state = {
     applyingRemote: false,
     snapshotTimer: null,
     snapshotInFlight: false, // serialize zip+send so rapid edits don't stack zips
-    snapshotApplyGen: 0, // ignore stale loadProject completions
     lastCursorSent: 0,
     lastSpriteInfoSent: 0,
     pendingSpriteInfo: null, // trailing sprite-info so the final drag position always lands
@@ -158,12 +157,16 @@ const sendSnapshotNow = async cacheOnly => {
     if (!state.active || state.applyingRemote || !state.vm) return;
     // One zip at a time — overlapping saveProjectSb3 janks the editor hard.
     if (state.snapshotInFlight) {
+        // false = full relay must win over a queued cacheOnly.
         state.snapshotAgain = cacheOnly === true ?
             (state.snapshotAgain !== false) : false;
         return;
     }
     state.snapshotInFlight = true;
     try {
+        // Land any coalesced block moves before we snapshot so the zip matches
+        // what peers already received live.
+        flushBlockMoves();
         if (cacheOnly === true) state.lastCacheSnapAt = Date.now();
         const out = await state.vm.saveProjectSb3();
         // Drop if we went inactive / started applying remote mid-zip.
@@ -218,7 +221,12 @@ const scheduleSnapshot = cacheOnly => {
 
 if (typeof document !== 'undefined') {
     document.addEventListener('visibilitychange', () => {
-        if (document.hidden || !state.active) return;
+        if (!state.active) return;
+        if (document.hidden) {
+            // Don't leave coalesced moves sitting in a timer across sleep.
+            flushBlockMoves();
+            return;
+        }
         if (state.deferredSnapshot !== undefined) {
             const flag = state.deferredSnapshot;
             state.deferredSnapshot = undefined;
@@ -228,7 +236,7 @@ if (typeof document !== 'undefined') {
 }
 
 const applySnapshot = async msg => {
-    if (!state.vm) return;
+    if (!state.vm || !msg || !msg.b64) return;
     // Reconnects re-deliver the room snapshot — if it's the state we already
     // have (usually our own), don't reload the project out from under us.
     if (msg.b64 === state.lastSnapshotB64) return;
@@ -239,15 +247,20 @@ const applySnapshot = async msg => {
         state.pendingRemotePaint.clear(); // snapshot supersedes queued strokes
         return;
     }
-    // Newer snapshot supersedes an in-flight load.
-    const gen = ++state.snapshotApplyGen;
+    // Serialize loads: concurrent loadProject on one VM corrupts state.
+    // Keep only the newest pending message and run them one at a time.
+    if (state.snapshotLoading) {
+        state.pendingSnapshotMsg = msg;
+        return;
+    }
+
     const keepTarget = editingTargetName();
     state.applyingRemote = true;
     state.snapshotLoading = true;
     try {
-        state.lastSnapshotB64 = msg.b64;
         await state.vm.loadProject(bufferFromB64(msg.b64));
-        if (gen !== state.snapshotApplyGen) return; // superseded
+        // Only mark applied after a successful load — failed loads must retry.
+        state.lastSnapshotB64 = msg.b64;
         rebuildTargetIndex();
         const restored = findTargetByName(keepTarget);
         if (restored) state.vm.setEditingTarget(restored.id);
@@ -258,17 +271,24 @@ const applySnapshot = async msg => {
         // eslint-disable-next-line no-console
         console.error('[collab] failed to apply snapshot', e);
     } finally {
-        if (gen === state.snapshotApplyGen) {
-            state.snapshotLoading = false;
-            state.applyingRemote = false;
-        }
+        state.snapshotLoading = false;
+        state.applyingRemote = false;
     }
-    if (gen !== state.snapshotApplyGen) return;
-    // Block edits that raced the load were queued — replay them on the new state.
+
+    // Block edits that raced the load were queued — replay on the state we just
+    // loaded (do this even if another snapshot is pending / paint-deferred).
     const queued = state.queuedBlockEvents.splice(0);
     const orphans = state.orphanBlockEvents.splice(0);
     for (let i = 0; i < queued.length; i++) applyBlockEvent(queued[i]);
     for (let i = 0; i < orphans.length; i++) applyBlockEvent(orphans[i]);
+
+    // A newer snapshot arrived while we were loading — apply it next (or
+    // re-defer if the user is still on the costumes tab).
+    if (state.pendingSnapshotMsg && state.pendingSnapshotMsg.b64 !== state.lastSnapshotB64) {
+        const next = state.pendingSnapshotMsg;
+        state.pendingSnapshotMsg = null;
+        await applySnapshot(next);
+    }
 };
 
 // -------------------------------------------------- outgoing: VM wrapping ---
@@ -294,6 +314,8 @@ const wrapTargeted = (vm, method, buildMsg) => {
         const msg = (state.active && !state.applyingRemote) ? buildMsg(...args) : null;
         const result = original(...args);
         if (msg) {
+            // Renames invalidate the name→target index used by remote applies.
+            if (method === 'renameSprite') rebuildTargetIndex();
             if (hasPeers()) client.send({type: 'vm-action', action: method, ...msg});
             scheduleSnapshot(true); // keep the server's cached copy fresh, relay-free
         }
@@ -423,6 +445,13 @@ const wrapVm = vm => {
         if (state.active && !state.applyingRemote) {
             const target = editingTargetName();
             if (target && hasPeers()) {
+                // Copy the pixel view only — bitmap.data.buffer may be a larger
+                // ArrayBuffer shared with other views (byteOffset !== 0).
+                const pixels = bitmap.data;
+                const pixelCopy = pixels.buffer.slice(
+                    pixels.byteOffset,
+                    pixels.byteOffset + pixels.byteLength
+                );
                 state.pendingBitmap = {
                     type: 'vm-action',
                     action: 'updateBitmap',
@@ -432,7 +461,7 @@ const wrapVm = vm => {
                     height: bitmap.height,
                     sourceWidth: bitmap.sourceWidth,
                     sourceHeight: bitmap.sourceHeight,
-                    data: b64FromBuffer(bitmap.data.buffer),
+                    data: b64FromBuffer(pixelCopy),
                     rotationCenterX,
                     rotationCenterY,
                     bitmapResolution
@@ -482,7 +511,10 @@ const wrapVm = vm => {
 // ------------------------------------------------ outgoing: block events ---
 
 const flushBlockMoves = () => {
-    state.blockMoveTimer = null;
+    if (state.blockMoveTimer) {
+        clearTimeout(state.blockMoveTimer);
+        state.blockMoveTimer = null;
+    }
     if (!state.pendingBlockMoves.size) return;
     const batch = state.pendingBlockMoves;
     state.pendingBlockMoves = new Map();
@@ -703,7 +735,10 @@ const applyVmAction = msg => {
             state.vm.stopAll();
         } else if (msg.action === 'renameSprite') {
             const target = findTargetByName(msg.target);
-            if (target) state.vm.renameSprite(target.id, msg.newName);
+            if (target) {
+                state.vm.renameSprite(target.id, msg.newName);
+                rebuildTargetIndex();
+            }
         } else if (msg.action === 'renameCostume' || msg.action === 'renameSound') {
             // these operate on vm.editingTarget — impersonate briefly
             const target = findTargetByName(msg.target);
