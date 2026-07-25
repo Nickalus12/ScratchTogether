@@ -110,6 +110,9 @@ class Overlay {
 
     _updateCursors () {
         if (!this.cursorLayer) return;
+        // Background tabs: skip layout thrash entirely.
+        if (document.hidden) return;
+
         // Nothing to draw and nothing drawn — skip all layout reads this frame.
         let anyCursor = false;
         for (const p of this.peers.values()) {
@@ -131,7 +134,7 @@ class Overlay {
         // scrolling and zooming.
         let ctm = null;
         let svgRect = null;
-        if (workspace && !document.hidden) {
+        if (workspace) {
             try {
                 const svg = workspace.getParentSvg();
                 svgRect = svg.getBoundingClientRect();
@@ -141,7 +144,9 @@ class Overlay {
             } catch (e) { /* workspace mid-teardown */ }
         }
 
+        const seen = new Set();
         for (const [id, p] of this.peers) {
+            seen.add(id);
             const el = this._cursorEl(id, p);
             let visible = false;
             if (ctm && p.cursor && p.cursor.sprite === localSprite) {
@@ -152,14 +157,22 @@ class Overlay {
                     visible = true;
                 }
             }
-            el.style.display = visible ? 'block' : 'none';
+            if (el._stVisible !== visible) {
+                el._stVisible = visible;
+                el.style.display = visible ? 'block' : 'none';
+            }
         }
-        for (const el of this.cursorLayer.children) {
-            if (!this.peers.has(Number(el.dataset.peer))) el.remove();
+        // Drop DOM for peers who left (cached on the peer object, not querySelector).
+        for (const el of [...this.cursorLayer.children]) {
+            const id = Number(el.dataset.peer);
+            if (!seen.has(id)) {
+                el.remove();
+            }
         }
     }
 
     _cursorEl (id, p) {
+        if (p._cursorEl && p._cursorEl.isConnected) return p._cursorEl;
         let el = this.cursorLayer.querySelector(`[data-peer="${id}"]`);
         if (!el) {
             el = document.createElement('div');
@@ -173,6 +186,7 @@ class Overlay {
                           padding:2px 6px;margin:-2px 0 0 10px;white-space:nowrap">${this._esc(p.name)}</div>`;
             this.cursorLayer.appendChild(el);
         }
+        p._cursorEl = el;
         return el;
     }
 

@@ -22,6 +22,8 @@ const state = {
     active: false,
     applyingRemote: false,
     snapshotTimer: null,
+    snapshotInFlight: false, // serialize zip+send so rapid edits don't stack zips
+    snapshotApplyGen: 0, // ignore stale loadProject completions
     lastCursorSent: 0,
     lastSpriteInfoSent: 0,
     pendingSpriteInfo: null, // trailing sprite-info so the final drag position always lands
@@ -33,6 +35,14 @@ const state = {
     pendingSnapshotMsg: null, // deferred remote snapshot while locally painting
     snapshotLoading: false,
     queuedBlockEvents: [],
+    // Orphan block-events (unknown sprite) held briefly until a snapshot lands.
+    orphanBlockEvents: [],
+    // Coalesce rapid block moves (drag) into one send per block id.
+    pendingBlockMoves: new Map(), // blockId -> msg
+    blockMoveTimer: null,
+    targetByName: null, // Map name -> target; rebuilt on project load
+    lastWorkspaceRefresh: 0,
+    housekeepTimer: null,
     initialized: false
 };
 
@@ -65,10 +75,16 @@ const b64FromBuffer = buf => {
     return btoa(bin);
 };
 
+// Faster than a per-byte loop on multi-MB snapshots (join from room cache).
 const bufferFromB64 = b64 => {
     const bin = atob(b64);
-    const bytes = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    const len = bin.length;
+    const bytes = new Uint8Array(len);
+    const CHUNK = 0x8000;
+    for (let i = 0; i < len; i += CHUNK) {
+        const end = Math.min(i + CHUNK, len);
+        for (let j = i; j < end; j++) bytes[j] = bin.charCodeAt(j);
+    }
     return bytes.buffer;
 };
 
@@ -77,9 +93,26 @@ const editingTargetName = () => {
     return t ? t.getName() : null;
 };
 
+const rebuildTargetIndex = () => {
+    const map = new Map();
+    if (state.vm) {
+        const targets = state.vm.runtime.targets;
+        for (let i = 0; i < targets.length; i++) {
+            const t = targets[i];
+            if (t && t.isOriginal) map.set(t.getName(), t);
+        }
+    }
+    state.targetByName = map;
+};
+
 const findTargetByName = name => {
     if (!state.vm || !name) return null;
-    return state.vm.runtime.targets.find(t => t.isOriginal && t.getName() === name) || null;
+    if (!state.targetByName) rebuildTargetIndex();
+    let t = state.targetByName.get(name);
+    if (t && t.blocks) return t;
+    // Stale after rename/add — rebuild once.
+    rebuildTargetIndex();
+    return state.targetByName.get(name) || null;
 };
 
 // Blockly event JSON -> the shape scratch-vm's blocklyListen/adapter expects.
@@ -123,9 +156,18 @@ const blobToB64 = blob => new Promise((resolve, reject) => {
 
 const sendSnapshotNow = async cacheOnly => {
     if (!state.active || state.applyingRemote || !state.vm) return;
+    // One zip at a time — overlapping saveProjectSb3 janks the editor hard.
+    if (state.snapshotInFlight) {
+        state.snapshotAgain = cacheOnly === true ?
+            (state.snapshotAgain !== false) : false;
+        return;
+    }
+    state.snapshotInFlight = true;
     try {
         if (cacheOnly === true) state.lastCacheSnapAt = Date.now();
         const out = await state.vm.saveProjectSb3();
+        // Drop if we went inactive / started applying remote mid-zip.
+        if (!state.active || state.applyingRemote) return;
         const b64 = typeof out.arrayBuffer === 'function' ?
             await blobToB64(out) :
             b64FromBuffer(out);
@@ -135,6 +177,13 @@ const sendSnapshotNow = async cacheOnly => {
     } catch (e) {
         // eslint-disable-next-line no-console
         console.error('[collab] snapshot failed', e);
+    } finally {
+        state.snapshotInFlight = false;
+        if (state.snapshotAgain !== undefined) {
+            const again = state.snapshotAgain;
+            state.snapshotAgain = undefined;
+            scheduleSnapshot(again);
+        }
     }
 };
 
@@ -154,6 +203,11 @@ const scheduleSnapshot = cacheOnly => {
     state.snapshotTimer = setTimeout(() => {
         state.snapshotTimer = null;
         const flag = state.pendingSnapshotCacheOnly;
+        // Don't zip while the tab is backgrounded — visibility handler resumes.
+        if (typeof document !== 'undefined' && document.hidden) {
+            state.deferredSnapshot = flag;
+            return;
+        }
         if (flag && typeof window.requestIdleCallback === 'function') {
             window.requestIdleCallback(() => sendSnapshotNow(true), {timeout: 8000});
         } else {
@@ -161,6 +215,17 @@ const scheduleSnapshot = cacheOnly => {
         }
     }, wait);
 };
+
+if (typeof document !== 'undefined') {
+    document.addEventListener('visibilitychange', () => {
+        if (document.hidden || !state.active) return;
+        if (state.deferredSnapshot !== undefined) {
+            const flag = state.deferredSnapshot;
+            state.deferredSnapshot = undefined;
+            scheduleSnapshot(flag);
+        }
+    });
+}
 
 const applySnapshot = async msg => {
     if (!state.vm) return;
@@ -174,12 +239,16 @@ const applySnapshot = async msg => {
         state.pendingRemotePaint.clear(); // snapshot supersedes queued strokes
         return;
     }
+    // Newer snapshot supersedes an in-flight load.
+    const gen = ++state.snapshotApplyGen;
     const keepTarget = editingTargetName();
     state.applyingRemote = true;
     state.snapshotLoading = true;
     try {
         state.lastSnapshotB64 = msg.b64;
         await state.vm.loadProject(bufferFromB64(msg.b64));
+        if (gen !== state.snapshotApplyGen) return; // superseded
+        rebuildTargetIndex();
         const restored = findTargetByName(keepTarget);
         if (restored) state.vm.setEditingTarget(restored.id);
         if (msg.author && msg.author !== 'server') {
@@ -189,12 +258,17 @@ const applySnapshot = async msg => {
         // eslint-disable-next-line no-console
         console.error('[collab] failed to apply snapshot', e);
     } finally {
-        state.snapshotLoading = false;
-        state.applyingRemote = false;
+        if (gen === state.snapshotApplyGen) {
+            state.snapshotLoading = false;
+            state.applyingRemote = false;
+        }
     }
+    if (gen !== state.snapshotApplyGen) return;
     // Block edits that raced the load were queued — replay them on the new state.
     const queued = state.queuedBlockEvents.splice(0);
-    queued.forEach(m => applyBlockEvent(m));
+    const orphans = state.orphanBlockEvents.splice(0);
+    for (let i = 0; i < queued.length; i++) applyBlockEvent(queued[i]);
+    for (let i = 0; i < orphans.length; i++) applyBlockEvent(orphans[i]);
 };
 
 // -------------------------------------------------- outgoing: VM wrapping ---
@@ -398,6 +472,7 @@ const wrapVm = vm => {
     // motion without changing gameplay speed. Loading a project can reset
     // runtime options, so re-assert on every load.
     vm.runtime.on('PROJECT_LOADED', () => {
+        rebuildTargetIndex();
         try {
             vm.setInterpolation(true);
         } catch (e) { /* older vm */ }
@@ -406,11 +481,17 @@ const wrapVm = vm => {
 
 // ------------------------------------------------ outgoing: block events ---
 
+const flushBlockMoves = () => {
+    state.blockMoveTimer = null;
+    if (!state.pendingBlockMoves.size) return;
+    const batch = state.pendingBlockMoves;
+    state.pendingBlockMoves = new Map();
+    for (const msg of batch.values()) client.send(msg);
+};
+
 const onWorkspaceEvent = e => {
     if (!state.active || state.applyingRemote || state.workspaceSuspended) return;
-    if (e.type === 'ui') {
-        return;
-    }
+    if (e.type === 'ui') return;
     if (!RELAYED_BLOCK_EVENTS.has(e.type)) return;
     const target = editingTargetName();
     if (!target) return;
@@ -420,14 +501,26 @@ const onWorkspaceEvent = e => {
     } catch (err) {
         return;
     }
+    // Dragging a stack fires dozens of move events — keep only the latest per block.
+    if (e.type === 'move' && json.blockId) {
+        state.pendingBlockMoves.set(json.blockId, {type: 'block-event', target, event: json});
+        if (!state.blockMoveTimer) {
+            state.blockMoveTimer = setTimeout(flushBlockMoves, 32);
+        }
+        sendPresence({status: '✏️ coding', sprite: target});
+        return;
+    }
+    if (state.pendingBlockMoves.size) flushBlockMoves();
     client.send({type: 'block-event', target, event: json});
     sendPresence({status: '✏️ coding', sprite: target});
 };
 
 const onWorkspaceMouseMove = evt => {
     if (!state.active || !state.workspace || !hasPeers()) return;
+    if (typeof document !== 'undefined' && document.hidden) return;
     const now = Date.now();
-    if (now - state.lastCursorSent < 40) return;
+    // ~15 fps is plenty for remote cursors and halves WS traffic under load.
+    if (now - state.lastCursorSent < 66) return;
     state.lastCursorSent = now;
     try {
         const ctm = state.workspace.getCanvas().getScreenCTM();
@@ -440,10 +533,21 @@ const onWorkspaceMouseMove = evt => {
 
 // Which editor tab is active locally (0 code / 1 costumes / 2 sounds)?
 // Read from the DOM so we don't have to thread redux state out of React.
+let _tabCache = {idx: 0, at: 0};
 const currentTabIndex = () => {
-    const tabs = [...document.querySelectorAll('ul[role="tablist"] li[role="tab"]')].slice(0, 3);
-    const idx = tabs.findIndex(t => t.getAttribute('aria-selected') === 'true');
-    return idx === -1 ? 0 : idx;
+    const now = Date.now();
+    if (now - _tabCache.at < 200) return _tabCache.idx;
+    const tabs = document.querySelectorAll('ul[role="tablist"] li[role="tab"]');
+    let idx = 0;
+    const n = Math.min(tabs.length, 3);
+    for (let i = 0; i < n; i++) {
+        if (tabs[i].getAttribute('aria-selected') === 'true') {
+            idx = i;
+            break;
+        }
+    }
+    _tabCache = {idx, at: now};
+    return idx;
 };
 
 const TAB_STATUS = ['here', '🎨 painting', '🎵 sounds'];
@@ -454,12 +558,10 @@ const TAB_STATUS = ['here', '🎨 painting', '🎵 sounds'];
 const flushPendingPaint = () => {
     const queued = [...state.pendingRemotePaint.values()];
     state.pendingRemotePaint.clear();
-    queued.forEach(msg => applyVmAction(msg));
+    for (let i = 0; i < queued.length; i++) applyVmAction(queued[i]);
 };
 
-// 1s housekeeping: cursor-hide when our blocks view disappears, and tab
-// presence so peers see "🎨 painting" the moment someone opens that editor.
-setInterval(() => {
+const housekeep = () => {
     if (!state.active) return;
 
     const tab = currentTabIndex();
@@ -469,7 +571,6 @@ setInterval(() => {
         sendPresence({status: TAB_STATUS[tab] || 'here', sprite: editingTargetName()});
         if (wasPainting) {
             if (state.pendingSnapshotMsg) {
-                // held-back snapshot wins over any queued individual strokes
                 const snap = state.pendingSnapshotMsg;
                 state.pendingSnapshotMsg = null;
                 state.pendingRemotePaint.clear();
@@ -478,6 +579,12 @@ setInterval(() => {
                 flushPendingPaint();
             }
         }
+    }
+
+    // Drop orphaned block-events that never found a sprite (stale after 8s).
+    if (state.orphanBlockEvents.length) {
+        const cutoff = Date.now() - 8000;
+        state.orphanBlockEvents = state.orphanBlockEvents.filter(m => (m._queuedAt || 0) > cutoff);
     }
 
     if (!state.cursorShown) return;
@@ -492,7 +599,19 @@ setInterval(() => {
         state.cursorShown = false;
         if (hasPeers()) client.send({type: 'cursor', hide: true});
     }
-}, 1000);
+};
+
+const startHousekeeping = () => {
+    if (state.housekeepTimer) return;
+    state.housekeepTimer = setInterval(housekeep, 1000);
+};
+
+const stopHousekeeping = () => {
+    if (state.housekeepTimer) {
+        clearInterval(state.housekeepTimer);
+        state.housekeepTimer = null;
+    }
+};
 
 // ------------------------------------------------- incoming: application ---
 
@@ -504,7 +623,11 @@ const applyBlockEvent = msg => {
     }
     const target = findTargetByName(msg.target);
     if (!target) {
-        // We don't know this sprite yet — a snapshot is likely in flight; skip.
+        // Sprite not here yet (snapshot in flight / rename race) — hold briefly.
+        if (state.orphanBlockEvents.length < 200) {
+            msg._queuedAt = Date.now();
+            state.orphanBlockEvents.push(msg);
+        }
         return;
     }
     const vmEvent = jsonToVmEvent(msg.event);
@@ -532,8 +655,13 @@ const applyBlockEvent = msg => {
                 const blocklyEvent = SB.Events.fromJson(msg.event, state.workspace);
                 blocklyEvent.run(true);
             } catch (e) {
-                // Workspace drifted from VM (rare) — reload it from the VM.
-                state.vm.refreshWorkspace();
+                // Workspace drifted from VM (rare) — reload, but not more than
+                // twice a second (a burst of bad events used to freeze the editor).
+                const now = Date.now();
+                if (now - state.lastWorkspaceRefresh > 500) {
+                    state.lastWorkspaceRefresh = now;
+                    state.vm.refreshWorkspace();
+                }
             } finally {
                 SB.Events.enable();
             }
@@ -738,11 +866,13 @@ installNetBridge();
 const wireSocket = () => {
     client.on('welcome', msg => {
         state.active = true;
+        startHousekeeping();
         overlay.setConnected(true);
         overlay.setSelf(client.session.name, msg.color, msg.room);
         overlay.setPeers(msg.peers, msg.id);
         overlay.setProjects(msg.projects);
         overlay.toast(`Welcome, ${client.session.name}! Room: ${msg.room}`, msg.color);
+        rebuildTargetIndex();
         // First one in an empty room seeds it with the current project.
         if (!msg.hasSnapshot && msg.peers.length <= 1) {
             sendSnapshotNow();
@@ -756,6 +886,7 @@ const wireSocket = () => {
     });
     client.on('disconnected', () => {
         overlay.setConnected(false);
+        // Keep housekeeping running — reconnect is expected; stop only on solo exit.
         netEmit('disconnected', {});
     });
     client.on('peer-joined', msg => {
