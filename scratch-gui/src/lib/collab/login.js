@@ -14,6 +14,14 @@ const showLogin = () => new Promise(resolve => {
     const savedName = params.get('name') || localStorage.getItem('st_name') || '';
     const savedRoom = params.get('room') || localStorage.getItem('st_room') || 'family';
 
+    // Coming from the homescreen: name + room already chosen there, skip the modal.
+    if (params.get('auto') === '1' && savedName.trim() && savedRoom.trim()) {
+        localStorage.setItem('st_name', savedName.trim());
+        localStorage.setItem('st_room', savedRoom.trim());
+        resolve({name: savedName.trim(), room: savedRoom.trim(), url: defaultServerUrl()});
+        return;
+    }
+
     const overlay = document.createElement('div');
     overlay.id = 'st-login';
     overlay.style.cssText = [
