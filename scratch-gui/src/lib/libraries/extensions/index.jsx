@@ -53,9 +53,32 @@ import twIcon from './tw/tw.svg';
 import customExtensionIcon from './custom/custom.svg';
 import returnIcon from './custom/return.svg';
 import galleryIcon from './gallery/gallery.svg';
+import togetherIconURL from './together/together.svg';
+import togetherInsetIconURL from './together/together-small.svg';
 import {APP_NAME} from '../../brand';
 
 export default [
+    {
+        name: (
+            <FormattedMessage
+                defaultMessage="Together"
+                description="Name for the ScratchTogether multiplayer game extension"
+                id="gui.extension.together.name"
+            />
+        ),
+        extensionId: 'together',
+        iconURL: togetherIconURL,
+        insetIconURL: togetherInsetIconURL,
+        description: (
+            <FormattedMessage
+                defaultMessage="Make multiplayer games with friends in the same room."
+                description="Description for the Together multiplayer extension"
+                id="gui.extension.together.description"
+            />
+        ),
+        tags: ['scratch', 'tw'],
+        featured: true
+    },
     {
         name: (
             <FormattedMessage
