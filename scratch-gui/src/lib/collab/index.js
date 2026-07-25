@@ -42,7 +42,10 @@ const state = {
     targetByName: null, // Map name -> target; rebuilt on project load
     lastWorkspaceRefresh: 0,
     housekeepTimer: null,
-    initialized: false
+    initialized: false,
+    everConnected: false, // welcome seen at least once (reconnect detection)
+    offlineEdits: false, // project edited while the socket was down
+    skipNextSnapshot: false // drop the stale room snapshot after an offline-edit rejoin
 };
 
 // Presence/cursor traffic is pointless with nobody in the room.
@@ -192,6 +195,7 @@ const sendSnapshotNow = async cacheOnly => {
 
 const scheduleSnapshot = cacheOnly => {
     if (!state.active || state.applyingRemote) return;
+    if (!client.connected) state.offlineEdits = true;
     // A pending relay snapshot must not be downgraded by a later cacheOnly request.
     state.pendingSnapshotCacheOnly = state.snapshotTimer ?
         (state.pendingSnapshotCacheOnly && cacheOnly === true) :
@@ -237,6 +241,13 @@ if (typeof document !== 'undefined') {
 
 const applySnapshot = async msg => {
     if (!state.vm || !msg || !msg.b64) return;
+    // Reconnect with edits made while offline and nobody else in the room:
+    // our local copy is the newest truth — the welcome handler already pushed
+    // it, so drop the stale room snapshot instead of reverting the user's work.
+    if (state.skipNextSnapshot) {
+        state.skipNextSnapshot = false;
+        return;
+    }
     // Reconnects re-deliver the room snapshot — if it's the state we already
     // have (usually our own), don't reload the project out from under us.
     if (msg.b64 === state.lastSnapshotB64) return;
@@ -525,6 +536,7 @@ const onWorkspaceEvent = e => {
     if (!state.active || state.applyingRemote || state.workspaceSuspended) return;
     if (e.type === 'ui') return;
     if (!RELAYED_BLOCK_EVENTS.has(e.type)) return;
+    if (!client.connected) state.offlineEdits = true;
     const target = editingTargetName();
     if (!target) return;
     let json;
@@ -900,18 +912,30 @@ installNetBridge();
 
 const wireSocket = () => {
     client.on('welcome', msg => {
+        const isReconnect = state.everConnected;
+        state.everConnected = true;
         state.active = true;
         startHousekeeping();
         overlay.setConnected(true);
         overlay.setSelf(client.session.name, msg.color, msg.room);
         overlay.setPeers(msg.peers, msg.id);
         overlay.setProjects(msg.projects);
-        overlay.toast(`Welcome, ${client.session.name}! Room: ${msg.room}`, msg.color);
+        overlay.toast(
+            isReconnect ? '🔌 Reconnected!' : `Welcome, ${client.session.name}! Room: ${msg.room}`,
+            msg.color
+        );
         rebuildTargetIndex();
         // First one in an empty room seeds it with the current project.
         if (!msg.hasSnapshot && msg.peers.length <= 1) {
             sendSnapshotNow();
+        } else if (isReconnect && state.offlineEdits && msg.peers.length <= 1) {
+            // We kept editing through a connection blip and nobody else is in
+            // the room — push our newer state instead of letting the server's
+            // stale snapshot revert it. (With others online, theirs wins.)
+            state.skipNextSnapshot = true;
+            sendSnapshotNow();
         }
+        state.offlineEdits = false;
         state.lastPresence = {status: null, sprite: null, sentAt: 0};
         client.send({type: 'presence', sprite: editingTargetName(), status: 'here'});
         // Seed Together shared variables for late joiners / reconnects.
