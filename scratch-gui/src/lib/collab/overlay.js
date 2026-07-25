@@ -52,7 +52,10 @@ class Overlay {
     mount () {
         if (this.cursorLayer) return;
         this.cursorLayer = document.createElement('div');
-        this.cursorLayer.style.cssText = 'position:fixed;inset:0;pointer-events:none;z-index:9997;overflow:hidden';
+        // z-index 450: above the editor content, BELOW scratch-gui modals
+        // (ReactModal overlays sit at 510+) so cursors never float over
+        // addon settings, libraries, or other panels.
+        this.cursorLayer.style.cssText = 'position:fixed;inset:0;pointer-events:none;z-index:450;overflow:hidden';
         document.body.appendChild(this.cursorLayer);
 
         const loop = () => {
@@ -109,23 +112,35 @@ class Overlay {
         if (!this.cursorLayer) return;
         const workspace = this.getWorkspace();
         const localSprite = this.localSpriteName();
+
+        // Cursors only exist inside a LIVE blocks workspace: same sprite open
+        // on both sides, and the local workspace actually rendered on screen
+        // (rect collapses to 0 when the costumes/sounds tab or another page is
+        // active). Positions recompute from the canvas CTM every frame, so
+        // they stay glued to the peer's workspace coordinates through local
+        // scrolling and zooming.
+        let ctm = null;
+        let svgRect = null;
+        if (workspace && !document.hidden) {
+            try {
+                const svg = workspace.getParentSvg();
+                svgRect = svg.getBoundingClientRect();
+                if (svgRect.width > 10 && svgRect.height > 10) {
+                    ctm = workspace.getCanvas().getScreenCTM();
+                }
+            } catch (e) { /* workspace mid-teardown */ }
+        }
+
         for (const [id, p] of this.peers) {
             const el = this._cursorEl(id, p);
             let visible = false;
-            if (workspace && p.cursor && p.cursor.sprite === localSprite) {
-                try {
-                    const canvas = workspace.getCanvas();
-                    const ctm = canvas.getScreenCTM();
-                    if (ctm) {
-                        const pt = new DOMPoint(p.cursor.x, p.cursor.y).matrixTransform(ctm);
-                        const svgRect = workspace.getParentSvg().getBoundingClientRect();
-                        if (pt.x >= svgRect.left && pt.x <= svgRect.right &&
-                            pt.y >= svgRect.top && pt.y <= svgRect.bottom) {
-                            el.style.transform = `translate(${pt.x}px, ${pt.y}px)`;
-                            visible = true;
-                        }
-                    }
-                } catch (e) { /* workspace mid-teardown */ }
+            if (ctm && p.cursor && p.cursor.sprite === localSprite) {
+                const pt = new DOMPoint(p.cursor.x, p.cursor.y).matrixTransform(ctm);
+                if (pt.x >= svgRect.left && pt.x <= svgRect.right &&
+                    pt.y >= svgRect.top && pt.y <= svgRect.bottom) {
+                    el.style.transform = `translate(${pt.x}px, ${pt.y}px)`;
+                    visible = true;
+                }
             }
             el.style.display = visible ? 'block' : 'none';
         }
