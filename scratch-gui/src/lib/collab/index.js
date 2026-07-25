@@ -109,12 +109,23 @@ const RELAYED_BLOCK_EVENTS = new Set([
 // cacheOnly snapshots update the server's persisted copy (for late joiners /
 // restarts) WITHOUT making current peers reload — used after live-synced paint
 // edits, where peers already have the change applied in place.
+// Browser-native base64 (FileReader) — the manual chunk loop janks the main
+// thread hard on multi-MB projects, which showed up as editor stutter.
+const blobToB64 = blob => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result).split(',')[1]);
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+});
+
 const sendSnapshotNow = async cacheOnly => {
     if (!state.active || state.applyingRemote || !state.vm) return;
     try {
+        if (cacheOnly === true) state.lastCacheSnapAt = Date.now();
         const out = await state.vm.saveProjectSb3();
-        const buf = typeof out.arrayBuffer === 'function' ? await out.arrayBuffer() : out;
-        const b64 = b64FromBuffer(buf);
+        const b64 = typeof out.arrayBuffer === 'function' ?
+            await blobToB64(out) :
+            b64FromBuffer(out);
         if (b64 === state.lastSnapshotB64) return; // nothing actually changed
         state.lastSnapshotB64 = b64;
         client.send({type: 'snapshot', b64, cacheOnly: cacheOnly === true});
@@ -131,10 +142,21 @@ const scheduleSnapshot = cacheOnly => {
         (state.pendingSnapshotCacheOnly && cacheOnly === true) :
         cacheOnly === true;
     clearTimeout(state.snapshotTimer);
+    // cacheOnly snapshots only refresh the server's copy for late joiners — the
+    // live edits already reached everyone. Zipping the whole project is the
+    // expensive part (multi-MB in game rooms), so do it rarely and when idle.
+    const wait = state.pendingSnapshotCacheOnly ?
+        Math.max(1500, 20000 - (Date.now() - (state.lastCacheSnapAt || 0))) :
+        1000;
     state.snapshotTimer = setTimeout(() => {
         state.snapshotTimer = null;
-        sendSnapshotNow(state.pendingSnapshotCacheOnly);
-    }, 800);
+        const flag = state.pendingSnapshotCacheOnly;
+        if (flag && typeof window.requestIdleCallback === 'function') {
+            window.requestIdleCallback(() => sendSnapshotNow(true), {timeout: 8000});
+        } else {
+            sendSnapshotNow(flag);
+        }
+    }, wait);
 };
 
 const applySnapshot = async msg => {
@@ -161,15 +183,31 @@ const applySnapshot = async msg => {
 
 // Any of these mutating the project means assets/structure changed -> resync all.
 const SNAPSHOT_METHODS = [
-    'addSprite', 'deleteSprite', 'duplicateSprite', 'renameSprite', 'reorderTarget',
+    'addSprite', 'deleteSprite', 'duplicateSprite',
     'addCostume', 'addCostumeFromLibrary', 'deleteCostume', 'duplicateCostume',
-    'renameCostume', 'reorderCostume',
-    'addSound', 'deleteSound', 'duplicateSound', 'renameSound', 'reorderSound',
+    'addSound', 'deleteSound', 'duplicateSound',
     'updateSoundBuffer', 'addBackdrop',
     'shareBlocksToTarget', 'shareCostumeToTarget', 'shareSoundToTarget'
 ];
-// updateSvg / updateBitmap are intentionally NOT here — paint edits sync live
-// (see wrapPaintSync) so the other side sees strokes without a project reload.
+// NOT here: updateSvg/updateBitmap (paint syncs live) and renames/reorders
+// (targeted messages below) — a full zip + reload for a rename was the main
+// source of editor stutter.
+
+// Light operations relay as tiny targeted messages instead of snapshots.
+// buildMsg runs BEFORE the mutation so it can capture pre-change names.
+const wrapTargeted = (vm, method, buildMsg) => {
+    if (typeof vm[method] !== 'function') return;
+    const original = vm[method].bind(vm);
+    vm[method] = (...args) => {
+        const msg = (state.active && !state.applyingRemote) ? buildMsg(...args) : null;
+        const result = original(...args);
+        if (msg) {
+            if (hasPeers()) client.send({type: 'vm-action', action: method, ...msg});
+            scheduleSnapshot(true); // keep the server's cached copy fresh, relay-free
+        }
+        return result;
+    };
+};
 
 const wrapVm = vm => {
     for (const method of SNAPSHOT_METHODS) {
@@ -236,6 +274,28 @@ const wrapVm = vm => {
         }
         return result;
     };
+
+    const targetNameById = id => {
+        const t = vm.runtime.getTargetById(id);
+        return t ? t.getName() : null;
+    };
+    wrapTargeted(vm, 'renameSprite', (targetId, newName) => {
+        const target = targetNameById(targetId);
+        return target ? {target, newName} : null;
+    });
+    wrapTargeted(vm, 'renameCostume', (index, newName) =>
+        ({target: editingTargetName(), index, newName}));
+    wrapTargeted(vm, 'renameSound', (index, newName) =>
+        ({target: editingTargetName(), index, newName}));
+    wrapTargeted(vm, 'reorderCostume', (targetId, from, to) => {
+        const target = targetNameById(targetId);
+        return target ? {target, from, to} : null;
+    });
+    wrapTargeted(vm, 'reorderSound', (targetId, from, to) => {
+        const target = targetNameById(targetId);
+        return target ? {target, from, to} : null;
+    });
+    wrapTargeted(vm, 'reorderTarget', (from, to) => ({from, to}));
 
     // Live paint sync — vector strokes relay per edit-commit; bitmap edits are
     // heavier (raw pixels) so they relay with a trailing debounce. Both also
@@ -464,6 +524,26 @@ const applyVmAction = msg => {
             overlay.toast(`▶ ${msg.fromName} pressed the green flag!`, msg.color);
         } else if (msg.action === 'stopAll') {
             state.vm.stopAll();
+        } else if (msg.action === 'renameSprite') {
+            const target = findTargetByName(msg.target);
+            if (target) state.vm.renameSprite(target.id, msg.newName);
+        } else if (msg.action === 'renameCostume' || msg.action === 'renameSound') {
+            // these operate on vm.editingTarget — impersonate briefly
+            const target = findTargetByName(msg.target);
+            if (target) {
+                const prev = state.vm.editingTarget;
+                state.vm.editingTarget = target;
+                try {
+                    state.vm[msg.action](msg.index, msg.newName);
+                } finally {
+                    state.vm.editingTarget = prev;
+                }
+            }
+        } else if (msg.action === 'reorderCostume' || msg.action === 'reorderSound') {
+            const target = findTargetByName(msg.target);
+            if (target) state.vm[msg.action](target.id, msg.from, msg.to);
+        } else if (msg.action === 'reorderTarget') {
+            state.vm.reorderTarget(msg.from, msg.to);
         } else if (msg.action === 'updateSvg' || msg.action === 'updateBitmap') {
             // Never stomp an open paint editor: applying a remote edit to the
             // sprite the local user is painting resets scratch-paint's working
