@@ -68,15 +68,57 @@ no extra config. The server prints LAN invite links at startup.
 | Action | How |
 |---|---|
 | Block editing (create/move/change/delete, variables, comments) | live Blockly events, per-sprite, no reload |
-| Sprite drag on stage, direction/size/visibility | live, throttled |
+| Sprite drag on stage, direction/size/visibility | live, throttled (paused while green-flag running) |
 | Green flag / stop | mirrored on both sides + toast |
 | Paint edits (vector + bitmap) | LIVE per stroke-commit — costume/stage update in place, no reload |
 | Add/delete/rename sprite, costumes, sounds | debounced full `.sb3` snapshot — everyone converges |
 | Cursors (on the same sprite's workspace) | colored pointer with name tag |
 | Presence (who's here, which sprite, coding/playing) | widget bottom-right |
+| **Game messages & shared variables** (Together extension) | live `game` messages over the same socket; vars cached server-side for late joiners |
 
 Routing is by sprite **name** (stable across .sb3 loads); snapshots are cached
 by the server and persisted, so a room survives restarts and rejoining.
+
+## Multiplayer games
+
+The **Together** extension (Add Extension → Together) turns a room into a
+multiplayer game session. Everyone running the same project exchanges game
+messages and shared variables while the green flag is down — each machine still
+simulates independently; only the values you send are shared.
+
+| Block | What it does |
+|---|---|
+| `broadcast game message [name] with [value]` | Send a named message + value to everyone in the room (including yourself) |
+| `when I receive game message [name]` | Hat — runs when that message arrives |
+| `game message value` | The value from the most recent game message |
+| `set shared variable [name] to [value]` | Last-write-wins room variable (synced) |
+| `shared variable [name]` | Read a shared variable (late joiners get current values) |
+| `my player name` | Your collab login name |
+| `other players` | Comma-joined names of everyone else in the room |
+| `when a player joins` / `when a player leaves` | Hats for presence changes |
+
+### Tiny two-player example
+
+A shared counter both players can bump:
+
+1. Add the **Together** extension.
+2. On the Stage:
+
+```text
+when green flag clicked
+set shared variable [score] to [0]
+
+when I receive game message [bump]
+set shared variable [score] to ((shared variable [score]) + (game message value))
+say (join [Score: ] (shared variable [score]))
+
+when this sprite clicked
+broadcast game message [bump] with [1]
+```
+
+3. Open the same room in two browsers, green-flag both, click the stage on
+   either side — both see the score climb. A third tab that joins mid-game
+   already has the current `score` via the server cache.
 
 ## License
 
