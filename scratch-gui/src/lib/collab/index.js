@@ -11,9 +11,11 @@
  *    are relayed as lightweight presence messages.
  */
 
+import paper from '@turbowarp/paper';
 import client from './client';
 import showLogin from './login';
 import overlay from './overlay';
+import paintMerge from './paint-merge';
 
 const state = {
     vm: null,
@@ -48,7 +50,31 @@ const state = {
     skipNextSnapshot: false, // drop the stale room snapshot after an offline-edit rejoin
     roomVersion: 0, // last room snapshot version we've seen/produced (server-gated)
     forceNextSnapshot: false, // deliberate override (offline-edit rejoin) bypasses the gate
-    recentPaint: new Map() // "target|index|kind" -> {at, msg}; re-applied after snapshot loads
+    recentPaint: new Map(), // "target|index|kind" -> {at, msg}; re-applied after snapshot loads
+    // Per-costume paint bases: for svg the last export/apply text (stroke-diff
+    // base), for bitmaps the freshest known full pixels (patch base + shadow).
+    paintBase: new Map(), // "target|index|svg" -> text; "target|index|bmp" -> {pixels,width,height}
+    pointerDown: false // mid-stroke guard: remote paint defers until pointer release
+};
+
+const trimPaintBase = () => {
+    while (state.paintBase.size > 12) {
+        state.paintBase.delete(state.paintBase.keys().next().value);
+    }
+};
+
+// Bumped whenever a remote paint edit lands on a costume; the paint editor
+// wrapper folds it into imageId so an OPEN editor reloads and shows the
+// partner's stroke immediately (true co-painting on one costume).
+const paintRevs = new Map(); // "targetName|costumeIndex" -> rev
+const bumpPaintRev = (targetName, costumeIndex) => {
+    const key = `${targetName}|${costumeIndex}`;
+    paintRevs.set(key, (paintRevs.get(key) || 0) + 1);
+};
+const paintRev = (targetId, costumeIndex) => {
+    if (!state.vm) return 0;
+    const t = state.vm.runtime.getTargetById(targetId);
+    return t ? (paintRevs.get(`${t.getName()}|${costumeIndex}`) || 0) : 0;
 };
 
 // Latest paint edit per costume, from either side. Full-project snapshot loads
@@ -173,6 +199,33 @@ const blobToB64 = blob => new Promise((resolve, reject) => {
     reader.readAsDataURL(blob);
 });
 
+const pngFromImageData = imageData => new Promise((resolve, reject) => {
+    const canvas = document.createElement('canvas');
+    canvas.width = imageData.width;
+    canvas.height = imageData.height;
+    canvas.getContext('2d').putImageData(imageData, 0, 0);
+    canvas.toBlob(blob => {
+        if (blob) blobToB64(blob).then(resolve, reject);
+        else reject(new Error('toBlob returned null'));
+    }, 'image/png');
+});
+
+const decodePng = b64 => new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = reject;
+    img.src = `data:image/png;base64,${b64}`;
+});
+
+const imageDataFromImg = (img, w, h) => {
+    const canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(img, 0, 0);
+    return ctx.getImageData(0, 0, w, h);
+};
+
 const sendSnapshotNow = async cacheOnly => {
     if (!state.active || state.applyingRemote || !state.vm) return;
     // One zip at a time — overlapping saveProjectSb3 janks the editor hard.
@@ -259,6 +312,44 @@ if (typeof document !== 'undefined') {
             scheduleSnapshot(flag);
         }
     });
+
+    // Mid-stroke guard for live co-painting: remote paint holds while the
+    // local pointer is down and lands right after release — after
+    // scratch-paint's own mouseup commit has fired.
+    document.addEventListener('pointerdown', () => {
+        state.pointerDown = true;
+    }, true);
+    const pointerReleased = () => {
+        if (!state.pointerDown) return;
+        state.pointerDown = false;
+        setTimeout(() => {
+            if (!state.pointerDown && state.pendingRemotePaint.size) flushPendingPaint();
+        }, 80);
+    };
+    document.addEventListener('pointerup', pointerReleased, true);
+    document.addEventListener('pointercancel', pointerReleased, true);
+    window.addEventListener('blur', pointerReleased);
+
+    // Live cursors inside the paint editor: partners see WHERE you're drawing,
+    // not just that you're "painting". Coordinates travel in paper project
+    // space so they stay glued through each side's own zoom and pan.
+    document.addEventListener('mousemove', evt => {
+        if (!state.active || state.localTab !== 1 || !hasPeers()) return;
+        const now = Date.now();
+        if (now - state.lastCursorSent < 66) return;
+        try {
+            if (!paper.view || !paper.view.element) return;
+            const rect = paper.view.element.getBoundingClientRect();
+            if (rect.width < 10 ||
+                evt.clientX < rect.left || evt.clientX > rect.right ||
+                evt.clientY < rect.top || evt.clientY > rect.bottom) return;
+            state.lastCursorSent = now;
+            const pt = paper.view.viewToProject(
+                new paper.Point(evt.clientX - rect.left, evt.clientY - rect.top));
+            client.send({type: 'cursor', space: 'paint', x: pt.x, y: pt.y, sprite: editingTargetName()});
+            state.cursorShown = true;
+        } catch (e) { /* paint editor mid-teardown */ }
+    }, true);
 }
 
 const reapplyRecentPaint = () => {
@@ -309,6 +400,11 @@ const applySnapshot = async msg => {
     state.applyingRemote = true;
     state.snapshotLoading = true;
     if (msg.reset) state.recentPaint.clear(); // deliberate project open — don't resurrect old paint
+    // SVG diff bases die with the old assets (the editor reloads from the new
+    // ones). Bitmap shadows survive — they're the freshest pixels to restore.
+    for (const k of [...state.paintBase.keys()]) {
+        if (k.endsWith('|svg') || msg.reset) state.paintBase.delete(k);
+    }
     try {
         await state.vm.loadProject(bufferFromB64(msg.b64));
         // Only mark applied after a successful load — failed loads must retry.
@@ -477,59 +573,94 @@ const wrapVm = vm => {
     // Live paint sync — vector strokes relay per edit-commit; bitmap edits are
     // heavier (raw pixels) so they relay with a trailing debounce. Both also
     // refresh the server's cached .sb3 (cacheOnly) for late joiners.
+    const costumeSvgText = (targetName, index) => {
+        const t = findTargetByName(targetName);
+        const c = t && t.getCostumes()[index];
+        if (!c || !c.asset || c.dataFormat !== 'svg') return null;
+        try {
+            return new TextDecoder().decode(c.asset.data);
+        } catch (e) {
+            return null;
+        }
+    };
+
     const originalUpdateSvg = vm.updateSvg.bind(vm);
     vm.updateSvg = (costumeIndex, svg, rotationCenterX, rotationCenterY) => {
-        const result = originalUpdateSvg(costumeIndex, svg, rotationCenterX, rotationCenterY);
+        // Capture the diff base BEFORE the mutation: what this export was built
+        // from (the last export/apply for this costume, or the current asset).
+        let target = null;
+        let prev = null;
         if (state.active && !state.applyingRemote) {
-            const target = editingTargetName();
+            target = editingTargetName();
             if (target) {
-                const msg = {
-                    type: 'vm-action',
-                    action: 'updateSvg',
-                    target,
-                    costumeIndex,
-                    svg,
-                    rotationCenterX,
-                    rotationCenterY
-                };
-                cachePaint(msg); // survives any snapshot that lands on top of it
-                if (hasPeers()) {
-                    client.send(msg);
-                    sendPresence({status: '🎨 painting', sprite: target});
-                }
+                prev = state.paintBase.get(`${target}|${costumeIndex}|svg`);
+                if (prev == null) prev = costumeSvgText(target, costumeIndex);
+            }
+        }
+        const result = originalUpdateSvg(costumeIndex, svg, rotationCenterX, rotationCenterY);
+        if (state.active && !state.applyingRemote && target) {
+            state.paintBase.set(`${target}|${costumeIndex}|svg`, svg);
+            trimPaintBase();
+            const msg = {
+                type: 'vm-action',
+                action: 'updateSvg',
+                target,
+                costumeIndex,
+                svg,
+                rotationCenterX,
+                rotationCenterY
+            };
+            cachePaint(msg); // survives any snapshot that lands on top of it
+            if (hasPeers()) {
+                // Stroke-level delta lets a receiver who has DIVERGED (their own
+                // concurrent strokes) replay just our strokes instead of
+                // clobbering theirs with our full costume.
+                const delta = prev ? paintMerge.diffSvg(prev, svg) : null;
+                client.send(delta ?
+                    Object.assign({}, msg, {baseHash: paintMerge.hashStr(prev), delta}) :
+                    msg);
+                sendPresence({status: '🎨 painting', sprite: target});
             }
             scheduleSnapshot(true);
         }
         return result;
     };
 
-    // PNG-encode the bitmap before it goes on the wire. Raw RGBA at stage size
-    // is ~2.7 MB base64 per brush commit — that was the co-painting stutter on
-    // Wi-Fi/ZeroTier. PNG is typically 20-100x smaller. Falls back to raw if
-    // canvas encoding fails; receivers handle both encodings.
-    const sendBitmap = p => {
-        const finish = msg => {
-            cachePaint(msg);
-            client.send(msg);
-        };
-        const raw = () => finish(Object.assign({}, p.meta, {data: b64FromBuffer(p.pixels.buffer)}));
+    // Bitmap wire format: when we know the receiver's base (same dims), send
+    // only the changed-pixel rect + mask as small PNGs — merges concurrent
+    // brush areas on the receiver instead of replacing their whole bitmap, and
+    // is 100-1000x smaller than the raw RGBA that caused the co-painting
+    // stutter. First commit / resize sends a full PNG; raw is the last resort.
+    const sendBitmap = async p => {
+        const {meta, pixels} = p;
+        const key = `${meta.target}|${meta.costumeIndex}|bmp`;
+        const prev = state.paintBase.get(key);
+        state.paintBase.set(key, {pixels, width: meta.width, height: meta.height});
+        trimPaintBase();
+        // Snapshot-reapply restores bitmaps from this shadow — no PNG needed.
+        cachePaint(Object.assign({}, meta, {useShadow: true}));
+        if (!hasPeers()) return;
         try {
-            const canvas = document.createElement('canvas');
-            canvas.width = p.meta.width;
-            canvas.height = p.meta.height;
-            canvas.getContext('2d').putImageData(new ImageData(p.pixels, p.meta.width, p.meta.height), 0, 0);
-            canvas.toBlob(blob => {
-                if (!blob) {
-                    raw();
-                    return;
-                }
-                blobToB64(blob).then(
-                    b64 => finish(Object.assign({}, p.meta, {encoding: 'png', data: b64})),
-                    raw
-                );
-            }, 'image/png');
+            if (prev && prev.width === meta.width && prev.height === meta.height) {
+                const diff = paintMerge.diffBitmap(prev.pixels, pixels, meta.width, meta.height);
+                if (!diff) return; // nothing actually changed
+                const maskData = new ImageData(diff.pw, diff.ph);
+                for (let i = 0; i < diff.mask.length; i++) maskData.data[(i * 4) + 3] = diff.mask[i];
+                const [patchB64, maskB64] = await Promise.all([
+                    pngFromImageData(diff.patch),
+                    pngFromImageData(maskData)
+                ]);
+                client.send(Object.assign({}, meta, {
+                    encoding: 'png', mode: 'patch',
+                    px: diff.px, py: diff.py, pw: diff.pw, ph: diff.ph,
+                    data: patchB64, mask: maskB64
+                }));
+            } else {
+                const fullB64 = await pngFromImageData(new ImageData(pixels, meta.width, meta.height));
+                client.send(Object.assign({}, meta, {encoding: 'png', data: fullB64}));
+            }
         } catch (e) {
-            raw();
+            client.send(Object.assign({}, meta, {data: b64FromBuffer(pixels.buffer)}));
         }
     };
 
@@ -566,7 +697,7 @@ const wrapVm = vm => {
                 state.bitmapTimer = setTimeout(() => {
                     const p = state.pendingBitmap;
                     state.pendingBitmap = null;
-                    if (p) sendBitmap(p);
+                    if (p) sendBitmap(p).catch(() => {});
                 }, 250);
                 sendPresence({status: '🎨 painting', sprite: target});
             }
@@ -718,14 +849,18 @@ const housekeep = () => {
     }
 
     if (!state.cursorShown) return;
-    let workspaceVisible = false;
+    let cursorSurfaceVisible = false;
     try {
-        if (state.workspace && !document.hidden) {
-            const rect = state.workspace.getParentSvg().getBoundingClientRect();
-            workspaceVisible = rect.width > 10 && rect.height > 10;
+        if (!document.hidden) {
+            if (state.localTab === 1) {
+                cursorSurfaceVisible = true; // paint canvas is the cursor surface
+            } else if (state.workspace) {
+                const rect = state.workspace.getParentSvg().getBoundingClientRect();
+                cursorSurfaceVisible = rect.width > 10 && rect.height > 10;
+            }
         }
     } catch (e) { /* mid-teardown */ }
-    if (!workspaceVisible) {
+    if (!cursorSurfaceVisible) {
         state.cursorShown = false;
         if (hasPeers()) client.send({type: 'cursor', hide: true});
     }
@@ -855,13 +990,10 @@ const applyVmAction = msg => {
         } else if (msg.action === 'reorderTarget') {
             state.vm.reorderTarget(msg.from, msg.to);
         } else if (msg.action === 'updateSvg' || msg.action === 'updateBitmap') {
-            // Remember the freshest paint per costume regardless of what we do
-            // with it now — snapshot loads re-apply from this cache.
-            cachePaint(msg);
-            // Never stomp an open paint editor: applying a remote edit to the
-            // sprite the local user is painting resets scratch-paint's working
-            // state (selection, color picker). Defer until they leave the tab.
-            if (state.localTab === 1 && msg.target === editingTargetName()) {
+            // True co-painting: remote strokes merge in LIVE, even on the same
+            // costume — the only deferral left is while the local user is
+            // mid-stroke (pointer down), so a reload never eats a drag.
+            if (state.pointerDown && state.localTab === 1 && msg.target === editingTargetName()) {
                 state.pendingRemotePaint.set(`${msg.target}|${msg.costumeIndex}|${msg.action}`, msg);
                 state.applyingRemote = false;
                 return;
@@ -884,46 +1016,126 @@ const applyRemoteSvg = msg => {
     // _updateSvg takes the costume object directly — no editingTarget games.
     const target = findTargetByName(msg.target);
     const costume = target && target.getCostumes()[msg.costumeIndex];
-    if (costume) {
-        state.vm._updateSvg(costume, msg.svg, msg.rotationCenterX, msg.rotationCenterY);
+    if (!costume) return;
+    let final = {svg: msg.svg, rotationCenterX: msg.rotationCenterX, rotationCenterY: msg.rotationCenterY};
+    if (msg.delta && costume.dataFormat === 'svg' && costume.asset) {
+        let current = null;
+        try {
+            current = new TextDecoder().decode(costume.asset.data);
+        } catch (e) { /* fall through to full apply */ }
+        // Hash match = we're in sync with the sender's base: their full svg is
+        // exact. Mismatch = concurrent edits — replay just their strokes onto
+        // OUR costume so both sides' work lands.
+        if (current && paintMerge.hashStr(current) !== msg.baseHash) {
+            const merged = paintMerge.mergeSvg(
+                current, msg.svg, msg.delta,
+                costume.rotationCenterX, costume.rotationCenterY
+            );
+            if (merged) final = merged;
+        }
     }
+    bumpPaintRev(msg.target, msg.costumeIndex); // reload an open paint editor
+    state.vm._updateSvg(costume, final.svg, final.rotationCenterX, final.rotationCenterY);
+    state.paintBase.set(`${msg.target}|${msg.costumeIndex}|svg`, final.svg);
+    trimPaintBase();
+    cachePaint({
+        type: 'vm-action', action: 'updateSvg',
+        target: msg.target, costumeIndex: msg.costumeIndex,
+        svg: final.svg,
+        rotationCenterX: final.rotationCenterX, rotationCenterY: final.rotationCenterY
+    });
 };
 
-const commitRemoteBitmap = (msg, imageData) => {
+const commitRemoteBitmap = (msg, pixels) => {
     // Re-resolve the costume — PNG decode is async and the project may have
     // reloaded (snapshot) between arrival and decode.
     const target = findTargetByName(msg.target);
     const costume = target && target.getCostumes()[msg.costumeIndex];
     if (!costume) return;
+    // The shadow is the freshest full pixels for this costume: patch base for
+    // future merges AND the snapshot-reapply source.
+    state.paintBase.set(`${msg.target}|${msg.costumeIndex}|bmp`, {
+        pixels, width: msg.width, height: msg.height
+    });
+    trimPaintBase();
+    cachePaint({
+        type: 'vm-action', action: 'updateBitmap', useShadow: true,
+        target: msg.target, costumeIndex: msg.costumeIndex,
+        width: msg.width, height: msg.height,
+        sourceWidth: msg.sourceWidth, sourceHeight: msg.sourceHeight,
+        rotationCenterX: msg.rotationCenterX, rotationCenterY: msg.rotationCenterY,
+        bitmapResolution: msg.bitmapResolution
+    });
+    // Copy for the VM — the shadow keeps mutating on future patches.
+    const imageData = new ImageData(new Uint8ClampedArray(pixels), msg.width, msg.height);
     imageData.sourceWidth = msg.sourceWidth;
     imageData.sourceHeight = msg.sourceHeight;
+    bumpPaintRev(msg.target, msg.costumeIndex); // reload an open paint editor
     state.vm._updateBitmap(
         costume, imageData,
         msg.rotationCenterX, msg.rotationCenterY, msg.bitmapResolution
     );
 };
 
+// Current full pixels for a costume: the live shadow, else decoded from the
+// costume's stored PNG asset.
+const currentBitmapPixels = async msg => {
+    const shadow = state.paintBase.get(`${msg.target}|${msg.costumeIndex}|bmp`);
+    if (shadow && shadow.width === msg.width && shadow.height === msg.height) return shadow.pixels;
+    const target = findTargetByName(msg.target);
+    const costume = target && target.getCostumes()[msg.costumeIndex];
+    if (!costume || !costume.asset) return null;
+    const url = URL.createObjectURL(new Blob([costume.asset.data]));
+    try {
+        const img = await new Promise((resolve, reject) => {
+            const i = new Image();
+            i.onload = () => resolve(i);
+            i.onerror = reject;
+            i.src = url;
+        });
+        if (img.naturalWidth !== msg.width || img.naturalHeight !== msg.height) return null;
+        return imageDataFromImg(img, msg.width, msg.height).data;
+    } finally {
+        URL.revokeObjectURL(url);
+    }
+};
+
+const applyBitmapPatch = async msg => {
+    const base = await currentBitmapPixels(msg);
+    if (!base) return; // dims mismatch (missed a resize) — next full send heals
+    const [patchImg, maskImg] = await Promise.all([decodePng(msg.data), decodePng(msg.mask)]);
+    const patchData = imageDataFromImg(patchImg, msg.pw, msg.ph);
+    const maskData = imageDataFromImg(maskImg, msg.pw, msg.ph);
+    const maskAlpha = new Uint8ClampedArray(msg.pw * msg.ph);
+    for (let i = 0; i < maskAlpha.length; i++) maskAlpha[i] = maskData.data[(i * 4) + 3];
+    paintMerge.compositePatch(base, msg.width, patchData.data, maskAlpha, msg.px, msg.py, msg.pw, msg.ph);
+    commitRemoteBitmap(msg, base);
+};
+
 const applyRemoteBitmap = msg => {
-    if (msg.encoding === 'png') {
-        const img = new Image();
-        img.onload = () => {
-            try {
-                const canvas = document.createElement('canvas');
-                canvas.width = msg.width;
-                canvas.height = msg.height;
-                const ctx = canvas.getContext('2d');
-                ctx.drawImage(img, 0, 0);
-                commitRemoteBitmap(msg, ctx.getImageData(0, 0, msg.width, msg.height));
-            } catch (e) {
-                // eslint-disable-next-line no-console
-                console.error('[collab] png bitmap decode failed', e);
-            }
-        };
-        img.src = `data:image/png;base64,${msg.data}`;
+    if (msg.useShadow) {
+        // Snapshot-reapply path: restore from the local shadow.
+        const shadow = state.paintBase.get(`${msg.target}|${msg.costumeIndex}|bmp`);
+        if (shadow) commitRemoteBitmap(msg, shadow.pixels);
         return;
     }
-    const bytes = new Uint8ClampedArray(bufferFromB64(msg.data));
-    commitRemoteBitmap(msg, new ImageData(bytes, msg.width, msg.height));
+    if (msg.mode === 'patch') {
+        applyBitmapPatch(msg).catch(e => {
+            // eslint-disable-next-line no-console
+            console.error('[collab] bitmap patch failed', e);
+        });
+        return;
+    }
+    if (msg.encoding === 'png') {
+        decodePng(msg.data).then(img => {
+            commitRemoteBitmap(msg, imageDataFromImg(img, msg.width, msg.height).data);
+        }, e => {
+            // eslint-disable-next-line no-console
+            console.error('[collab] png bitmap decode failed', e);
+        });
+        return;
+    }
+    commitRemoteBitmap(msg, new Uint8ClampedArray(bufferFromB64(msg.data)));
 };
 
 // -------------------------------------------- multiplayer game bridge ---
@@ -1095,7 +1307,7 @@ const wireSocket = () => {
     client.on('presence', msg => overlay.setPeerPresence(msg.from, msg));
     client.on('cursor', msg => overlay.setPeerCursor(
         msg.from,
-        msg.hide ? null : {x: msg.x, y: msg.y, sprite: msg.sprite}
+        msg.hide ? null : {space: msg.space, x: msg.x, y: msg.y, sprite: msg.sprite}
     ));
     // Together extension traffic — never gated by projectRunning.
     client.on('game', msg => {
@@ -1169,4 +1381,4 @@ const detachWorkspace = () => {
     state.ScratchBlocks = null;
 };
 
-export default {init, attachWorkspace, detachWorkspace, suspendWorkspaceEvents, resumeWorkspaceEvents};
+export default {init, attachWorkspace, detachWorkspace, suspendWorkspaceEvents, resumeWorkspaceEvents, paintRev};

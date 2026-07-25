@@ -3,6 +3,10 @@
  * (components/menu-bar/collab-presence.jsx) via subscribe()/getState().
  * Only the cursor layer and transient toasts touch the DOM directly. */
 
+// Same paper singleton scratch-paint uses — lets us place partners' paint
+// cursors through the local zoom/pan (view <-> project conversion).
+import paper from '@turbowarp/paper';
+
 class Overlay {
     constructor () {
         this.peers = new Map(); // id -> {name, color, status, sprite, cursor:{x,y,sprite}}
@@ -149,7 +153,9 @@ class Overlay {
             seen.add(id);
             const el = this._cursorEl(id, p);
             let visible = false;
-            if (ctm && p.cursor && p.cursor.sprite === localSprite) {
+            if (p.cursor && p.cursor.space === 'paint') {
+                visible = this._placePaintCursor(el, p.cursor, localSprite);
+            } else if (ctm && p.cursor && p.cursor.sprite === localSprite) {
                 const pt = new DOMPoint(p.cursor.x, p.cursor.y).matrixTransform(ctm);
                 if (pt.x >= svgRect.left && pt.x <= svgRect.right &&
                     pt.y >= svgRect.top && pt.y <= svgRect.bottom) {
@@ -168,6 +174,26 @@ class Overlay {
             if (!seen.has(id)) {
                 el.remove();
             }
+        }
+    }
+
+    // A partner's paint-editor cursor: only meaningful when this user has the
+    // SAME sprite open in their own paint editor (paper.view exists only while
+    // the costumes tab is mounted).
+    _placePaintCursor (el, cursor, localSprite) {
+        if (cursor.sprite !== localSprite) return false;
+        try {
+            if (!paper.view || !paper.view.element) return false;
+            const rect = paper.view.element.getBoundingClientRect();
+            if (rect.width < 10 || rect.height < 10) return false;
+            const pt = paper.view.projectToView(new paper.Point(cursor.x, cursor.y));
+            const x = rect.left + pt.x;
+            const y = rect.top + pt.y;
+            if (x < rect.left || x > rect.right || y < rect.top || y > rect.bottom) return false;
+            el.style.transform = `translate(${x}px, ${y}px)`;
+            return true;
+        } catch (e) {
+            return false;
         }
     }
 

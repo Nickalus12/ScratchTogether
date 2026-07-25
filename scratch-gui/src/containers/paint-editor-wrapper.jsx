@@ -8,6 +8,7 @@ import ErrorBoundaryHOC from '../lib/error-boundary-hoc.jsx';
 import {openFontsModal} from '../reducers/modals';
 
 import {connect} from 'react-redux';
+import collab from '../lib/collab';
 import {Theme} from '../lib/themes/index.js';
 
 class PaintEditorWrapper extends React.Component {
@@ -118,7 +119,9 @@ const mapStateToProps = (state, {selectedCostumeIndex}) => {
         rotationCenterX: costume && costume.rotationCenterX,
         rotationCenterY: costume && costume.rotationCenterY,
         imageFormat: costume && costume.dataFormat,
-        imageId: targetId && `${targetId}${costume.skinId}`,
+        // collab.paintRev bumps when a partner's paint edit lands on this costume,
+        // forcing the open editor to reload and show their stroke live.
+        imageId: targetId && `${targetId}${costume.skinId}:${collab.paintRev(targetId, index)}`,
         rtl: state.locales.isRtl,
         selectedCostumeIndex: index,
         theme: state.scratchGui.theme.theme,
