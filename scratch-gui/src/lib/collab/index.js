@@ -30,6 +30,9 @@ const state = {
     lastSnapshotB64: null, // dedup — skip re-broadcasting identical project state
     localTab: 0, // 0 code / 1 costumes / 2 sounds
     pendingRemotePaint: new Map(), // deferred remote paint edits while locally painting
+    pendingSnapshotMsg: null, // deferred remote snapshot while locally painting
+    snapshotLoading: false,
+    queuedBlockEvents: [],
     initialized: false
 };
 
@@ -161,8 +164,19 @@ const scheduleSnapshot = cacheOnly => {
 
 const applySnapshot = async msg => {
     if (!state.vm) return;
+    // Reconnects re-deliver the room snapshot — if it's the state we already
+    // have (usually our own), don't reload the project out from under us.
+    if (msg.b64 === state.lastSnapshotB64) return;
+    // Never yank the project while the user is mid-paint — hold the newest
+    // snapshot and apply it when they leave the costumes tab.
+    if (state.localTab === 1) {
+        state.pendingSnapshotMsg = msg;
+        state.pendingRemotePaint.clear(); // snapshot supersedes queued strokes
+        return;
+    }
     const keepTarget = editingTargetName();
     state.applyingRemote = true;
+    state.snapshotLoading = true;
     try {
         state.lastSnapshotB64 = msg.b64;
         await state.vm.loadProject(bufferFromB64(msg.b64));
@@ -175,8 +189,12 @@ const applySnapshot = async msg => {
         // eslint-disable-next-line no-console
         console.error('[collab] failed to apply snapshot', e);
     } finally {
+        state.snapshotLoading = false;
         state.applyingRemote = false;
     }
+    // Block edits that raced the load were queued — replay them on the new state.
+    const queued = state.queuedBlockEvents.splice(0);
+    queued.forEach(m => applyBlockEvent(m));
 };
 
 // -------------------------------------------------- outgoing: VM wrapping ---
@@ -449,7 +467,17 @@ setInterval(() => {
         const wasPainting = state.localTab === 1;
         state.localTab = tab;
         sendPresence({status: TAB_STATUS[tab] || 'here', sprite: editingTargetName()});
-        if (wasPainting) flushPendingPaint();
+        if (wasPainting) {
+            if (state.pendingSnapshotMsg) {
+                // held-back snapshot wins over any queued individual strokes
+                const snap = state.pendingSnapshotMsg;
+                state.pendingSnapshotMsg = null;
+                state.pendingRemotePaint.clear();
+                applySnapshot(snap);
+            } else {
+                flushPendingPaint();
+            }
+        }
     }
 
     if (!state.cursorShown) return;
@@ -469,6 +497,11 @@ setInterval(() => {
 // ------------------------------------------------- incoming: application ---
 
 const applyBlockEvent = msg => {
+    if (state.snapshotLoading) {
+        // Don't apply into a half-loaded project — replay after the load.
+        if (state.queuedBlockEvents.length < 500) state.queuedBlockEvents.push(msg);
+        return;
+    }
     const target = findTargetByName(msg.target);
     if (!target) {
         // We don't know this sprite yet — a snapshot is likely in flight; skip.
