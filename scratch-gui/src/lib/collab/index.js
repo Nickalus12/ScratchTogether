@@ -45,7 +45,24 @@ const state = {
     initialized: false,
     everConnected: false, // welcome seen at least once (reconnect detection)
     offlineEdits: false, // project edited while the socket was down
-    skipNextSnapshot: false // drop the stale room snapshot after an offline-edit rejoin
+    skipNextSnapshot: false, // drop the stale room snapshot after an offline-edit rejoin
+    roomVersion: 0, // last room snapshot version we've seen/produced (server-gated)
+    forceNextSnapshot: false, // deliberate override (offline-edit rejoin) bypasses the gate
+    recentPaint: new Map() // "target|index|kind" -> {at, msg}; re-applied after snapshot loads
+};
+
+// Latest paint edit per costume, from either side. Full-project snapshot loads
+// can carry costume state OLDER than live-synced paint edits (the zip is
+// debounced up to 20s behind) — without this cache a snapshot reverting fresh
+// strokes was the "we painted it and it came back undone" bug.
+const PAINT_CACHE_MAX_AGE_MS = 10 * 60 * 1000;
+const cachePaint = msg => {
+    const key = `${msg.target}|${msg.costumeIndex}|${msg.action}`;
+    state.recentPaint.set(key, {at: Date.now(), msg});
+    if (state.recentPaint.size > 64) {
+        const oldest = state.recentPaint.keys().next().value;
+        state.recentPaint.delete(oldest);
+    }
 };
 
 // Presence/cursor traffic is pointless with nobody in the room.
@@ -179,7 +196,12 @@ const sendSnapshotNow = async cacheOnly => {
             b64FromBuffer(out);
         if (b64 === state.lastSnapshotB64) return; // nothing actually changed
         state.lastSnapshotB64 = b64;
-        client.send({type: 'snapshot', b64, cacheOnly: cacheOnly === true});
+        const force = state.forceNextSnapshot === true;
+        state.forceNextSnapshot = false;
+        client.send({
+            type: 'snapshot', b64, cacheOnly: cacheOnly === true,
+            basedOn: state.roomVersion, force
+        });
     } catch (e) {
         // eslint-disable-next-line no-console
         console.error('[collab] snapshot failed', e);
@@ -239,6 +261,21 @@ if (typeof document !== 'undefined') {
     });
 }
 
+const reapplyRecentPaint = () => {
+    if (!state.recentPaint.size) return;
+    const cutoff = Date.now() - PAINT_CACHE_MAX_AGE_MS;
+    for (const [key, entry] of state.recentPaint) {
+        if (entry.at < cutoff) {
+            state.recentPaint.delete(key);
+            continue;
+        }
+        try {
+            if (entry.msg.action === 'updateSvg') applyRemoteSvg(entry.msg);
+            else applyRemoteBitmap(entry.msg);
+        } catch (e) { /* costume/target no longer exists in the new snapshot */ }
+    }
+};
+
 const applySnapshot = async msg => {
     if (!state.vm || !msg || !msg.b64) return;
     // Reconnect with edits made while offline and nobody else in the room:
@@ -250,7 +287,10 @@ const applySnapshot = async msg => {
     }
     // Reconnects re-deliver the room snapshot — if it's the state we already
     // have (usually our own), don't reload the project out from under us.
-    if (msg.b64 === state.lastSnapshotB64) return;
+    if (msg.b64 === state.lastSnapshotB64) {
+        if (typeof msg.version === 'number') state.roomVersion = msg.version;
+        return;
+    }
     // Never yank the project while the user is mid-paint — hold the newest
     // snapshot and apply it when they leave the costumes tab.
     if (state.localTab === 1) {
@@ -268,16 +308,25 @@ const applySnapshot = async msg => {
     const keepTarget = editingTargetName();
     state.applyingRemote = true;
     state.snapshotLoading = true;
+    if (msg.reset) state.recentPaint.clear(); // deliberate project open — don't resurrect old paint
     try {
         await state.vm.loadProject(bufferFromB64(msg.b64));
         // Only mark applied after a successful load — failed loads must retry.
         state.lastSnapshotB64 = msg.b64;
+        if (typeof msg.version === 'number') state.roomVersion = msg.version;
         rebuildTargetIndex();
+        // The zip we just loaded can be up to ~20s behind live-synced paint —
+        // re-apply the freshest costume state so strokes never get reverted.
+        const reapplied = !msg.reset && state.recentPaint.size > 0;
+        if (reapplied) reapplyRecentPaint();
         const restored = findTargetByName(keepTarget);
         if (restored) state.vm.setEditingTarget(restored.id);
         if (msg.author && msg.author !== 'server') {
             overlay.toast(`🔄 Project synced from ${msg.author}`, msg.color);
         }
+        // Costumes now differ from the room's persisted zip — refresh it
+        // (cacheOnly: peers already have the paint live).
+        if (reapplied) setTimeout(() => scheduleSnapshot(true), 0);
     } catch (e) {
         // eslint-disable-next-line no-console
         console.error('[collab] failed to apply snapshot', e);
@@ -433,8 +482,8 @@ const wrapVm = vm => {
         const result = originalUpdateSvg(costumeIndex, svg, rotationCenterX, rotationCenterY);
         if (state.active && !state.applyingRemote) {
             const target = editingTargetName();
-            if (target && hasPeers()) {
-                client.send({
+            if (target) {
+                const msg = {
                     type: 'vm-action',
                     action: 'updateSvg',
                     target,
@@ -442,12 +491,46 @@ const wrapVm = vm => {
                     svg,
                     rotationCenterX,
                     rotationCenterY
-                });
-                sendPresence({status: '🎨 painting', sprite: target});
+                };
+                cachePaint(msg); // survives any snapshot that lands on top of it
+                if (hasPeers()) {
+                    client.send(msg);
+                    sendPresence({status: '🎨 painting', sprite: target});
+                }
             }
             scheduleSnapshot(true);
         }
         return result;
+    };
+
+    // PNG-encode the bitmap before it goes on the wire. Raw RGBA at stage size
+    // is ~2.7 MB base64 per brush commit — that was the co-painting stutter on
+    // Wi-Fi/ZeroTier. PNG is typically 20-100x smaller. Falls back to raw if
+    // canvas encoding fails; receivers handle both encodings.
+    const sendBitmap = p => {
+        const finish = msg => {
+            cachePaint(msg);
+            client.send(msg);
+        };
+        const raw = () => finish(Object.assign({}, p.meta, {data: b64FromBuffer(p.pixels.buffer)}));
+        try {
+            const canvas = document.createElement('canvas');
+            canvas.width = p.meta.width;
+            canvas.height = p.meta.height;
+            canvas.getContext('2d').putImageData(new ImageData(p.pixels, p.meta.width, p.meta.height), 0, 0);
+            canvas.toBlob(blob => {
+                if (!blob) {
+                    raw();
+                    return;
+                }
+                blobToB64(blob).then(
+                    b64 => finish(Object.assign({}, p.meta, {encoding: 'png', data: b64})),
+                    raw
+                );
+            }, 'image/png');
+        } catch (e) {
+            raw();
+        }
     };
 
     const originalUpdateBitmap = vm.updateBitmap.bind(vm);
@@ -459,28 +542,31 @@ const wrapVm = vm => {
                 // Copy the pixel view only — bitmap.data.buffer may be a larger
                 // ArrayBuffer shared with other views (byteOffset !== 0).
                 const pixels = bitmap.data;
-                const pixelCopy = pixels.buffer.slice(
+                const pixelCopy = new Uint8ClampedArray(pixels.buffer.slice(
                     pixels.byteOffset,
                     pixels.byteOffset + pixels.byteLength
-                );
+                ));
                 state.pendingBitmap = {
-                    type: 'vm-action',
-                    action: 'updateBitmap',
-                    target,
-                    costumeIndex,
-                    width: bitmap.width,
-                    height: bitmap.height,
-                    sourceWidth: bitmap.sourceWidth,
-                    sourceHeight: bitmap.sourceHeight,
-                    data: b64FromBuffer(pixelCopy),
-                    rotationCenterX,
-                    rotationCenterY,
-                    bitmapResolution
+                    pixels: pixelCopy,
+                    meta: {
+                        type: 'vm-action',
+                        action: 'updateBitmap',
+                        target,
+                        costumeIndex,
+                        width: bitmap.width,
+                        height: bitmap.height,
+                        sourceWidth: bitmap.sourceWidth,
+                        sourceHeight: bitmap.sourceHeight,
+                        rotationCenterX,
+                        rotationCenterY,
+                        bitmapResolution
+                    }
                 };
                 clearTimeout(state.bitmapTimer);
                 state.bitmapTimer = setTimeout(() => {
-                    if (state.pendingBitmap) client.send(state.pendingBitmap);
+                    const p = state.pendingBitmap;
                     state.pendingBitmap = null;
+                    if (p) sendBitmap(p);
                 }, 250);
                 sendPresence({status: '🎨 painting', sprite: target});
             }
@@ -769,6 +855,9 @@ const applyVmAction = msg => {
         } else if (msg.action === 'reorderTarget') {
             state.vm.reorderTarget(msg.from, msg.to);
         } else if (msg.action === 'updateSvg' || msg.action === 'updateBitmap') {
+            // Remember the freshest paint per costume regardless of what we do
+            // with it now — snapshot loads re-apply from this cache.
+            cachePaint(msg);
             // Never stomp an open paint editor: applying a remote edit to the
             // sprite the local user is painting resets scratch-paint's working
             // state (selection, color picker). Defer until they leave the tab.
@@ -800,19 +889,41 @@ const applyRemoteSvg = msg => {
     }
 };
 
-const applyRemoteBitmap = msg => {
+const commitRemoteBitmap = (msg, imageData) => {
+    // Re-resolve the costume — PNG decode is async and the project may have
+    // reloaded (snapshot) between arrival and decode.
     const target = findTargetByName(msg.target);
     const costume = target && target.getCostumes()[msg.costumeIndex];
-    if (costume) {
-        const bytes = new Uint8ClampedArray(bufferFromB64(msg.data));
-        const imageData = new ImageData(bytes, msg.width, msg.height);
-        imageData.sourceWidth = msg.sourceWidth;
-        imageData.sourceHeight = msg.sourceHeight;
-        state.vm._updateBitmap(
-            costume, imageData,
-            msg.rotationCenterX, msg.rotationCenterY, msg.bitmapResolution
-        );
+    if (!costume) return;
+    imageData.sourceWidth = msg.sourceWidth;
+    imageData.sourceHeight = msg.sourceHeight;
+    state.vm._updateBitmap(
+        costume, imageData,
+        msg.rotationCenterX, msg.rotationCenterY, msg.bitmapResolution
+    );
+};
+
+const applyRemoteBitmap = msg => {
+    if (msg.encoding === 'png') {
+        const img = new Image();
+        img.onload = () => {
+            try {
+                const canvas = document.createElement('canvas');
+                canvas.width = msg.width;
+                canvas.height = msg.height;
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(img, 0, 0);
+                commitRemoteBitmap(msg, ctx.getImageData(0, 0, msg.width, msg.height));
+            } catch (e) {
+                // eslint-disable-next-line no-console
+                console.error('[collab] png bitmap decode failed', e);
+            }
+        };
+        img.src = `data:image/png;base64,${msg.data}`;
+        return;
     }
+    const bytes = new Uint8ClampedArray(bufferFromB64(msg.data));
+    commitRemoteBitmap(msg, new ImageData(bytes, msg.width, msg.height));
 };
 
 // -------------------------------------------- multiplayer game bridge ---
@@ -925,6 +1036,7 @@ const wireSocket = () => {
             msg.color
         );
         rebuildTargetIndex();
+        state.roomVersion = typeof msg.version === 'number' ? msg.version : 0;
         // First one in an empty room seeds it with the current project.
         if (!msg.hasSnapshot && msg.peers.length <= 1) {
             sendSnapshotNow();
@@ -933,6 +1045,7 @@ const wireSocket = () => {
             // the room — push our newer state instead of letting the server's
             // stale snapshot revert it. (With others online, theirs wins.)
             state.skipNextSnapshot = true;
+            state.forceNextSnapshot = true; // deliberate override of the version gate
             sendSnapshotNow();
         }
         state.offlineEdits = false;
@@ -967,6 +1080,9 @@ const wireSocket = () => {
         netEmit('peer-left', msg);
     });
     client.on('snapshot', applySnapshot);
+    client.on('snapshot-ack', msg => {
+        if (typeof msg.version === 'number') state.roomVersion = msg.version;
+    });
     client.on('projects', msg => overlay.setProjects(msg.projects));
     client.on('project-saved', msg => {
         overlay.setProjects(msg.projects);
