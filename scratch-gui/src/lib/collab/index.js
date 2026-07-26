@@ -241,12 +241,19 @@ const sendSnapshotNow = async cacheOnly => {
         // what peers already received live.
         flushBlockMoves();
         if (cacheOnly === true) state.lastCacheSnapAt = Date.now();
-        const out = await state.vm.saveProjectSb3();
+        // Ask JSZip for base64 directly — skips the blob -> FileReader -> b64
+        // copy chain (one less multi-MB pass on the main thread per snapshot).
+        let b64;
+        try {
+            b64 = await state.vm.saveProjectSb3('base64');
+        } catch (e) {
+            const out = await state.vm.saveProjectSb3();
+            b64 = typeof out.arrayBuffer === 'function' ?
+                await blobToB64(out) :
+                b64FromBuffer(out);
+        }
         // Drop if we went inactive / started applying remote mid-zip.
         if (!state.active || state.applyingRemote) return;
-        const b64 = typeof out.arrayBuffer === 'function' ?
-            await blobToB64(out) :
-            b64FromBuffer(out);
         if (b64 === state.lastSnapshotB64) return; // nothing actually changed
         state.lastSnapshotB64 = b64;
         const force = state.forceNextSnapshot === true;
