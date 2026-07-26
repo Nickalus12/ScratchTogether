@@ -67,6 +67,55 @@ class Overlay {
             this._raf = requestAnimationFrame(loop);
         };
         this._raf = requestAnimationFrame(loop);
+        // Sprite-tile presence dots poll slowly — DOM decoration, not per-frame.
+        setInterval(() => this._updateSpriteBadges(), 700);
+    }
+
+    // A colored dot on the sprite tile each partner currently has open — see
+    // where everyone is without reading the header.
+    _updateSpriteBadges () {
+        if (document.hidden) return;
+        const nameEls = document.querySelectorAll('[class*="sprite-selector-item_sprite-name"]');
+        if (!nameEls.length && !this._badges) return;
+        const tileByName = new Map();
+        for (const el of nameEls) {
+            const tile = el.closest('[class*="sprite-selector-item_sprite-selector-item"]');
+            if (tile) tileByName.set(el.textContent, tile);
+        }
+        this._badges = this._badges || new Map(); // peerId -> badge el
+        const offsets = new Map(); // tile -> count (stack multiple peers)
+        for (const [id, p] of this.peers) {
+            const tile = p.sprite ? tileByName.get(p.sprite) : null;
+            let badge = this._badges.get(id);
+            if (!tile) {
+                if (badge) {
+                    badge.remove();
+                    this._badges.delete(id);
+                }
+                continue;
+            }
+            if (!badge || !badge.isConnected || badge.parentElement !== tile) {
+                if (badge) badge.remove();
+                badge = document.createElement('div');
+                badge.title = p.name;
+                this._badges.set(id, badge);
+                tile.appendChild(badge);
+            }
+            const slot = offsets.get(tile) || 0;
+            offsets.set(tile, slot + 1);
+            badge.style.cssText = [
+                'position:absolute', `top:-4px`, `right:${-4 + (slot * 13)}px`, 'width:12px', 'height:12px',
+                `background:${p.color}`, 'border:2px solid #fff', 'border-radius:50%',
+                'box-shadow:0 1px 3px rgba(0,0,0,.35)', 'z-index:5', 'pointer-events:none'
+            ].join(';');
+            badge.title = `${p.name} is here`;
+        }
+        for (const [id, badge] of this._badges) {
+            if (!this.peers.has(id)) {
+                badge.remove();
+                this._badges.delete(id);
+            }
+        }
     }
 
     setSelf (name, color, room) {
@@ -153,15 +202,37 @@ class Overlay {
             seen.add(id);
             const el = this._cursorEl(id, p);
             let visible = false;
+            let tx = 0;
+            let ty = 0;
             if (p.cursor && p.cursor.space === 'paint') {
-                visible = this._placePaintCursor(el, p.cursor, localSprite);
+                const pos = this._paintCursorPos(p.cursor, localSprite);
+                if (pos) {
+                    visible = true;
+                    tx = pos.x;
+                    ty = pos.y;
+                }
             } else if (ctm && p.cursor && p.cursor.sprite === localSprite) {
                 const pt = new DOMPoint(p.cursor.x, p.cursor.y).matrixTransform(ctm);
                 if (pt.x >= svgRect.left && pt.x <= svgRect.right &&
                     pt.y >= svgRect.top && pt.y <= svgRect.bottom) {
-                    el.style.transform = `translate(${pt.x}px, ${pt.y}px)`;
                     visible = true;
+                    tx = pt.x;
+                    ty = pt.y;
                 }
+            }
+            if (visible) {
+                // Cursor positions arrive at ~15fps; ease toward the newest
+                // point every frame so remote cursors glide instead of step.
+                if (!el._stVisible || p._cx === undefined) {
+                    p._cx = tx;
+                    p._cy = ty;
+                } else {
+                    p._cx += (tx - p._cx) * 0.35;
+                    p._cy += (ty - p._cy) * 0.35;
+                    if (Math.abs(tx - p._cx) < 0.5) p._cx = tx;
+                    if (Math.abs(ty - p._cy) < 0.5) p._cy = ty;
+                }
+                el.style.transform = `translate(${p._cx}px, ${p._cy}px)`;
             }
             if (el._stVisible !== visible) {
                 el._stVisible = visible;
@@ -180,20 +251,19 @@ class Overlay {
     // A partner's paint-editor cursor: only meaningful when this user has the
     // SAME sprite open in their own paint editor (paper.view exists only while
     // the costumes tab is mounted).
-    _placePaintCursor (el, cursor, localSprite) {
-        if (cursor.sprite !== localSprite) return false;
+    _paintCursorPos (cursor, localSprite) {
+        if (cursor.sprite !== localSprite) return null;
         try {
-            if (!paper.view || !paper.view.element) return false;
+            if (!paper.view || !paper.view.element) return null;
             const rect = paper.view.element.getBoundingClientRect();
-            if (rect.width < 10 || rect.height < 10) return false;
+            if (rect.width < 10 || rect.height < 10) return null;
             const pt = paper.view.projectToView(new paper.Point(cursor.x, cursor.y));
             const x = rect.left + pt.x;
             const y = rect.top + pt.y;
-            if (x < rect.left || x > rect.right || y < rect.top || y > rect.bottom) return false;
-            el.style.transform = `translate(${x}px, ${y}px)`;
-            return true;
+            if (x < rect.left || x > rect.right || y < rect.top || y > rect.bottom) return null;
+            return {x, y};
         } catch (e) {
-            return false;
+            return null;
         }
     }
 

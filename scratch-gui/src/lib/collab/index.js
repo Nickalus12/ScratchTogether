@@ -251,9 +251,11 @@ const sendSnapshotNow = async cacheOnly => {
         state.lastSnapshotB64 = b64;
         const force = state.forceNextSnapshot === true;
         state.forceNextSnapshot = false;
+        const reset = cacheOnly !== true && state.resetNextSnapshot === true;
+        if (reset) state.resetNextSnapshot = false;
         client.send({
             type: 'snapshot', b64, cacheOnly: cacheOnly === true,
-            basedOn: state.roomVersion, force
+            basedOn: state.roomVersion, force, reset
         });
     } catch (e) {
         // eslint-disable-next-line no-console
@@ -449,17 +451,13 @@ const applySnapshot = async msg => {
 
 // -------------------------------------------------- outgoing: VM wrapping ---
 
-// Any of these mutating the project means assets/structure changed -> resync all.
+// Only these still resync via full snapshot — everything else (sprites,
+// costumes, sounds, paint, renames, reorders) relays as targeted messages so
+// nobody's editor freezes on a whole-project zip + reload anymore.
 const SNAPSHOT_METHODS = [
-    'addSprite', 'deleteSprite', 'duplicateSprite',
-    'addCostume', 'addCostumeFromLibrary', 'deleteCostume', 'duplicateCostume',
-    'addSound', 'deleteSound', 'duplicateSound',
-    'updateSoundBuffer', 'addBackdrop',
+    'updateSoundBuffer',
     'shareBlocksToTarget', 'shareCostumeToTarget', 'shareSoundToTarget'
 ];
-// NOT here: updateSvg/updateBitmap (paint syncs live) and renames/reorders
-// (targeted messages below) — a full zip + reload for a rename was the main
-// source of editor stutter.
 
 // Light operations relay as tiny targeted messages instead of snapshots.
 // buildMsg runs BEFORE the mutation so it can capture pre-change names.
@@ -484,18 +482,140 @@ const wrapVm = vm => {
         if (typeof vm[method] !== 'function') continue;
         const original = vm[method].bind(vm);
         vm[method] = (...args) => {
+            // Capture NOW — the flag is long reset by the time the promise
+            // resolves, and a remote-triggered rebroadcast would loop.
+            const wasRemote = state.applyingRemote;
             const result = original(...args);
-            Promise.resolve(result).then(scheduleSnapshot, () => {});
+            if (!wasRemote) Promise.resolve(result).then(scheduleSnapshot, () => {});
             return result;
         };
     }
 
-    // User opening a local .sb3 should push it to the room too.
+    const targetNameById = id => {
+        const t = vm.runtime.getTargetById(id);
+        return t ? t.getName() : null;
+    };
+
+    // ---- targeted sprite sync (no more full-project reloads on add/delete) --
+
+    // addSprite / duplicateSprite: after the sprite lands locally, export just
+    // that sprite (.sprite3 zip) and relay it — receivers install it in place.
+    const wrapSpriteAdder = method => {
+        if (typeof vm[method] !== 'function') return;
+        const original = vm[method].bind(vm);
+        vm[method] = (...args) => {
+            const wasRemote = state.applyingRemote || !state.active;
+            const before = wasRemote ? null : new Set(
+                vm.runtime.targets.filter(t => t.isOriginal).map(t => t.getName()));
+            const result = original(...args);
+            if (!wasRemote) {
+                Promise.resolve(result).then(() => {
+                    rebuildTargetIndex();
+                    const added = vm.runtime.targets.filter(t =>
+                        t.isOriginal && !t.isStage && !before.has(t.getName()));
+                    for (const t of added) {
+                        if (hasPeers()) {
+                            vm.exportSprite(t.id, 'base64').then(b64 => {
+                                client.send({type: 'vm-action', action: 'spriteAdd', sprite: b64, name: t.getName()});
+                            }, () => scheduleSnapshot()); // export failed — fall back to full resync
+                        }
+                    }
+                    scheduleSnapshot(true); // keep the server's cached copy fresh
+                }, () => {});
+            }
+            return result;
+        };
+    };
+    wrapSpriteAdder('addSprite');
+    wrapSpriteAdder('duplicateSprite');
+
+    const originalDeleteSprite = vm.deleteSprite.bind(vm);
+    vm.deleteSprite = targetId => {
+        const wasRemote = state.applyingRemote || !state.active;
+        const name = targetNameById(targetId);
+        const result = originalDeleteSprite(targetId);
+        if (!wasRemote && name) {
+            rebuildTargetIndex();
+            if (hasPeers()) client.send({type: 'vm-action', action: 'spriteDelete', target: name});
+            scheduleSnapshot(true);
+        }
+        return result;
+    };
+
+    // addCostume / addCostumeFromLibrary / addBackdrop / addSound: the asset
+    // bytes ride in the message; receivers recreate the asset locally.
+    const wrapCostumeAdder = (method, fixedVersion, stageTarget) => {
+        if (typeof vm[method] !== 'function') return;
+        const original = vm[method].bind(vm);
+        vm[method] = (md5ext, costumeObject, optTargetId, optVersion) => {
+            const wasRemote = state.applyingRemote || !state.active;
+            const result = original(md5ext, costumeObject, optTargetId, optVersion);
+            if (!wasRemote) {
+                Promise.resolve(result).then(() => {
+                    const targetName = stageTarget ?
+                        (vm.runtime.getTargetForStage() && vm.runtime.getTargetForStage().getName()) :
+                        (optTargetId ? targetNameById(optTargetId) : editingTargetName());
+                    const asset = costumeObject && costumeObject.asset;
+                    if (targetName && asset && asset.data && hasPeers()) {
+                        client.send({
+                            type: 'vm-action', action: 'costumeAdd', target: targetName,
+                            version: fixedVersion !== undefined ? fixedVersion : optVersion,
+                            costume: {
+                                name: costumeObject.name,
+                                dataFormat: costumeObject.dataFormat || asset.dataFormat,
+                                bitmapResolution: costumeObject.bitmapResolution,
+                                rotationCenterX: costumeObject.rotationCenterX,
+                                rotationCenterY: costumeObject.rotationCenterY
+                            },
+                            data: b64FromBuffer(asset.data)
+                        });
+                    }
+                    scheduleSnapshot(true);
+                }, () => {});
+            }
+            return result;
+        };
+    };
+    wrapCostumeAdder('addCostume');
+    wrapCostumeAdder('addCostumeFromLibrary', 2);
+    wrapCostumeAdder('addBackdrop', undefined, true);
+
+    const originalAddSound = vm.addSound.bind(vm);
+    vm.addSound = (soundObject, optTargetId) => {
+        const wasRemote = state.applyingRemote || !state.active;
+        const result = originalAddSound(soundObject, optTargetId);
+        if (!wasRemote) {
+            Promise.resolve(result).then(() => {
+                const targetName = optTargetId ? targetNameById(optTargetId) : editingTargetName();
+                const asset = soundObject && soundObject.asset;
+                if (targetName && asset && asset.data && hasPeers()) {
+                    client.send({
+                        type: 'vm-action', action: 'soundAdd', target: targetName,
+                        sound: {
+                            name: soundObject.name,
+                            dataFormat: soundObject.dataFormat || asset.dataFormat
+                        },
+                        data: b64FromBuffer(asset.data)
+                    });
+                }
+                scheduleSnapshot(true);
+            }, () => {});
+        }
+        return result;
+    };
+
+    // User opening a local .sb3 replaces the whole room project — that's the
+    // one legit full-snapshot left, and it must not resurrect cached paint.
     const originalLoad = vm.loadProject.bind(vm);
     vm.loadProject = (...args) => {
         const result = originalLoad(...args);
         if (!state.applyingRemote) {
-            Promise.resolve(result).then(scheduleSnapshot, () => {});
+            Promise.resolve(result).then(() => {
+                state.recentPaint.clear();
+                state.paintBase.clear();
+                state.resetNextSnapshot = true;
+                scheduleSnapshot();
+            }, () => {});
         }
         return result;
     };
@@ -548,10 +668,6 @@ const wrapVm = vm => {
         return result;
     };
 
-    const targetNameById = id => {
-        const t = vm.runtime.getTargetById(id);
-        return t ? t.getName() : null;
-    };
     wrapTargeted(vm, 'renameSprite', (targetId, newName) => {
         const target = targetNameById(targetId);
         return target ? {target, newName} : null;
@@ -569,6 +685,12 @@ const wrapVm = vm => {
         return target ? {target, from, to} : null;
     });
     wrapTargeted(vm, 'reorderTarget', (from, to) => ({from, to}));
+    // Delete/duplicate of costumes & sounds operate on vm.editingTarget by
+    // index — tiny targeted messages, no zips.
+    wrapTargeted(vm, 'deleteCostume', index => ({target: editingTargetName(), index}));
+    wrapTargeted(vm, 'duplicateCostume', index => ({target: editingTargetName(), index}));
+    wrapTargeted(vm, 'deleteSound', index => ({target: editingTargetName(), index}));
+    wrapTargeted(vm, 'duplicateSound', index => ({target: editingTargetName(), index}));
 
     // Live paint sync — vector strokes relay per edit-commit; bitmap edits are
     // heavier (raw pixels) so they relay with a trailing debounce. Both also
@@ -958,6 +1080,56 @@ const applySpriteInfo = msg => {
     state.applyingRemote = false;
 };
 
+// Install a relayed .sprite3 without yanking the local user off their sprite
+// (vm.addSprite switches editingTarget to the new sprite).
+const applySpriteAdd = msg => {
+    const prevEditing = state.vm.editingTarget;
+    state.vm.addSprite(new Uint8Array(bufferFromB64(msg.sprite))).then(() => {
+        rebuildTargetIndex();
+        if (prevEditing && state.vm.runtime.targets.includes(prevEditing)) {
+            state.vm.setEditingTarget(prevEditing.id);
+        }
+        overlay.toast(`✨ ${msg.fromName} added ${msg.name}`, msg.color);
+    }, e => {
+        // eslint-disable-next-line no-console
+        console.error('[collab] sprite install failed', e);
+    });
+};
+
+const applyCostumeAdd = msg => {
+    const target = findTargetByName(msg.target);
+    if (!target || !state.vm.runtime.storage) return;
+    const storage = state.vm.runtime.storage;
+    const fmt = (msg.costume && msg.costume.dataFormat) || 'png';
+    const assetType = fmt === 'svg' ? storage.AssetType.ImageVector : storage.AssetType.ImageBitmap;
+    const asset = storage.createAsset(assetType, fmt, new Uint8Array(bufferFromB64(msg.data)), null, true);
+    const costumeObj = Object.assign({}, msg.costume, {
+        asset, assetId: asset.assetId, dataFormat: fmt, md5: `${asset.assetId}.${fmt}`
+    });
+    // addCostume selects the new costume on the target's OWNER — only relevant
+    // if this user is editing the same sprite, which matches solo behavior.
+    state.vm.addCostume(costumeObj.md5, costumeObj, target.id, msg.version).catch(e => {
+        // eslint-disable-next-line no-console
+        console.error('[collab] costume install failed', e);
+    });
+};
+
+const applySoundAdd = msg => {
+    const target = findTargetByName(msg.target);
+    if (!target || !state.vm.runtime.storage) return;
+    const storage = state.vm.runtime.storage;
+    const fmt = (msg.sound && msg.sound.dataFormat) || 'wav';
+    const assetType = fmt === 'mp3' ? storage.AssetType.SoundMP3 : storage.AssetType.SoundWav;
+    const asset = storage.createAsset(assetType, fmt, new Uint8Array(bufferFromB64(msg.data)), null, true);
+    const soundObj = Object.assign({}, msg.sound, {
+        asset, assetId: asset.assetId, dataFormat: fmt, md5: `${asset.assetId}.${fmt}`
+    });
+    Promise.resolve(state.vm.addSound(soundObj, target.id)).catch(e => {
+        // eslint-disable-next-line no-console
+        console.error('[collab] sound install failed', e);
+    });
+};
+
 const applyVmAction = msg => {
     state.applyingRemote = true;
     try {
@@ -984,6 +1156,31 @@ const applyVmAction = msg => {
                     state.vm.editingTarget = prev;
                 }
             }
+        } else if (msg.action === 'deleteCostume' || msg.action === 'duplicateCostume' ||
+            msg.action === 'deleteSound' || msg.action === 'duplicateSound') {
+            const target = findTargetByName(msg.target);
+            if (target) {
+                const prev = state.vm.editingTarget;
+                state.vm.editingTarget = target;
+                try {
+                    state.vm[msg.action](msg.index);
+                } finally {
+                    state.vm.editingTarget = prev;
+                }
+            }
+        } else if (msg.action === 'spriteAdd') {
+            applySpriteAdd(msg);
+        } else if (msg.action === 'spriteDelete') {
+            const target = findTargetByName(msg.target);
+            if (target) {
+                state.vm.deleteSprite(target.id);
+                rebuildTargetIndex();
+                overlay.toast(`🗑️ ${msg.fromName} deleted ${msg.target}`, msg.color);
+            }
+        } else if (msg.action === 'costumeAdd') {
+            applyCostumeAdd(msg);
+        } else if (msg.action === 'soundAdd') {
+            applySoundAdd(msg);
         } else if (msg.action === 'reorderCostume' || msg.action === 'reorderSound') {
             const target = findTargetByName(msg.target);
             if (target) state.vm[msg.action](target.id, msg.from, msg.to);
