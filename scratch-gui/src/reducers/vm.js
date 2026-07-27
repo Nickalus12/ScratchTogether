@@ -8,7 +8,7 @@ const defaultVM = new VM();
 defaultVM.setCompatibilityMode(true);
 defaultVM.runtime.cloudOptions.limit = MAXIMUM_CLOUD_VARIABLES;
 defaultVM.attachStorage(storage);
-// Builtin Together extension — main-thread access to ScratchTogetherNet, saved
+// Builtin Together extension — main-thread access to SquiggleNet, saved
 // by id (not URL) so projects work across LAN / tunnel / localhost hosts.
 defaultVM.extensionManager.addBuiltinExtension('together', TogetherBlocks);
 const initialState = defaultVM;

@@ -1372,15 +1372,15 @@ const netEmit = (type, msg) => {
             list[i](msg);
         } catch (e) {
             // eslint-disable-next-line no-console
-            console.error('[collab] ScratchTogetherNet handler error', type, e);
+            console.error('[collab] SquiggleNet handler error', type, e);
         }
     }
 };
 
 const installNetBridge = () => {
     if (typeof window === 'undefined') return;
-    if (window.ScratchTogetherNet && window.ScratchTogetherNet.__st) return;
-    window.ScratchTogetherNet = {
+    if (window.SquiggleNet && window.SquiggleNet.__st) return;
+    window.SquiggleNet = {
         __st: true,
         send (msg) {
             if (!state.active) return;
@@ -1430,7 +1430,11 @@ const installNetBridge = () => {
             return cachedGameVars;
         }
     };
+    // Kept from the pre-rename build so any project or extension that bound to
+    // the old global keeps working.
+    window.ScratchTogetherNet = window.SquiggleNet;
     try {
+        window.dispatchEvent(new CustomEvent('SquiggleNetReady'));
         window.dispatchEvent(new CustomEvent('ScratchTogetherNetReady'));
     } catch (e) { /* old browsers */ }
 };

@@ -1,5 +1,5 @@
 /* Together — multiplayer game blocks for ScratchTogether rooms.
- * Runs as a builtin (main thread) so it can reach window.ScratchTogetherNet.
+ * Runs as a builtin (main thread) so it can reach window.SquiggleNet.
  * Talks only to that bridge; never opens its own socket. */
 
 // eslint-disable-next-line max-len
@@ -7,7 +7,7 @@ const menuIconURI = 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53M
 
 const str = v => (v == null ? '' : String(v));
 
-const getNet = () => (typeof window !== 'undefined' ? window.ScratchTogetherNet : null);
+const getNet = () => (typeof window !== 'undefined' ? window.SquiggleNet : null);
 
 class TogetherBlocks {
     constructor (runtime) {
@@ -28,7 +28,7 @@ class TogetherBlocks {
 
         // Event-driven bind — no polling. Also try immediately + on each opcode.
         if (typeof window !== 'undefined') {
-            window.addEventListener('ScratchTogetherNetReady', this._onBridgeReady);
+            window.addEventListener('SquiggleNetReady', this._onBridgeReady);
         }
         this._ensureBound();
 
@@ -58,7 +58,7 @@ class TogetherBlocks {
 
     dispose () {
         if (typeof window !== 'undefined') {
-            window.removeEventListener('ScratchTogetherNetReady', this._onBridgeReady);
+            window.removeEventListener('SquiggleNetReady', this._onBridgeReady);
         }
         for (let i = 0; i < this._unsubs.length; i++) {
             try {

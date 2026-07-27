@@ -1016,7 +1016,10 @@ class MenuBar extends React.Component {
                     <div className={styles.menuBarItem}>
                         <a
                             className={styles.feedbackLink}
-                            href="https://scratch.mit.edu/users/GarboMuffin/#comments"
+                            // Upstream points this at the TurboWarp author's Scratch
+                            // profile; under our own name that would send our users
+                            // to someone else's inbox.
+                            href="https://github.com/Nickalus12/SquiggleGames/issues"
                             rel="noopener noreferrer"
                             target="_blank"
                         >

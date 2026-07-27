@@ -1,7 +1,7 @@
 {
-  "short_name": "TurboWarp",
-  "name": "TurboWarp",
-  "description": "Mod of Scratch 3 with a compiler, dark mode, and more features.",
+  "short_name": "Squiggle",
+  "name": "Squiggle",
+  "description": "Build games together, live — one project, two cursors.",
   "icons": [
     {
       "src": "images/192.png",
@@ -14,8 +14,8 @@
       "sizes": "512x512"
     }
   ],
-  "start_url": "editor",
-  "background_color": "#333333",
+  "start_url": "/",
+  "background_color": "#0d1020",
   "display": "standalone",
-  "theme_color": "#333333"
+  "theme_color": "#7c5cff"
 }
