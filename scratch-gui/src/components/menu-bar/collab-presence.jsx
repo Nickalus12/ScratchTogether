@@ -99,6 +99,45 @@ class CollabPresence extends React.Component {
         const {self, connected, peers, open, copied} = this.state;
         if (!self) return null; // solo mode
 
+        // Always-available way back to the dashboard — the editor is otherwise
+        // a one-way door once you are in a room.
+        const homeButton = (
+            <a
+                href={'/'}
+                title={'Back to Squiggle'}
+                style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    background: 'rgba(0, 0, 0, 0.15)',
+                    borderRadius: '15px',
+                    padding: '4px 11px',
+                    marginRight: '6px',
+                    color: '#fff',
+                    fontSize: '12px',
+                    fontWeight: 'bold',
+                    textDecoration: 'none',
+                    whiteSpace: 'nowrap',
+                    userSelect: 'none'
+                }}
+            >
+                <svg
+                    width={'15'}
+                    height={'15'}
+                    viewBox={'0 0 26 26'}
+                >
+                    <path
+                        d={'M4 17c2.5 0 2.5-8 5-8s2.5 8 5 8 2.5-8 5-8'}
+                        stroke={'#fff'}
+                        strokeWidth={'2.6'}
+                        fill={'none'}
+                        strokeLinecap={'round'}
+                    />
+                </svg>
+                {'Home'}
+            </a>
+        );
+
         const button = (
             <div
                 onClick={this.handleToggle}
@@ -292,6 +331,7 @@ class CollabPresence extends React.Component {
                 ref={this.setRootRef}
                 style={{position: 'relative', display: 'flex', alignItems: 'center', padding: '0 8px'}}
             >
+                {homeButton}
                 {button}
                 {panel}
             </div>
