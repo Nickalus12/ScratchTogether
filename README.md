@@ -1,8 +1,16 @@
-# ScratchTogether
+# Squiggle
 
-TurboWarp (Scratch fork) with real-time multiplayer coding bolted on. Built for
-coding together with your kid — name-only login, live block editing, cursors,
-and presence.
+Real-time multiplayer for block coding — two people, one project, live. Built
+on [TurboWarp](https://turbowarp.org), which is built on
+[Scratch](https://scratch.mit.edu).
+
+Accounts are a handle and a passphrase (no email — kids don't have one, so
+recovery is a four-word code). Rooms are private, unlisted or public, with
+owner/editor/viewer roles and invite links. Everyone gets a colour and a cursor
+style, and you see each other's cursors move as you build.
+
+> Not affiliated with or endorsed by the Scratch Team. "Scratch" is their
+> trademark and is used here only to describe what this interoperates with.
 
 ## Layout
 

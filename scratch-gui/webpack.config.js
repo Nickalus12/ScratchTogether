@@ -186,7 +186,7 @@ module.exports = [
                 chunks: ['editor'],
                 template: 'src/playground/index.ejs',
                 filename: 'editor.html',
-                title: `${APP_NAME} - code with your family`,
+                title: `${APP_NAME} — build games together`,
                 isEditor: true,
                 ...htmlWebpackPluginCommon
             }),
@@ -194,14 +194,14 @@ module.exports = [
                 chunks: ['player'],
                 template: 'src/playground/index.ejs',
                 filename: 'index.html',
-                title: `${APP_NAME} - code with your family`,
+                title: `${APP_NAME} — build games together`,
                 ...htmlWebpackPluginCommon
             }),
             new HtmlWebpackPlugin({
                 chunks: ['fullscreen'],
                 template: 'src/playground/index.ejs',
                 filename: 'fullscreen.html',
-                title: `${APP_NAME} - code with your family`,
+                title: `${APP_NAME} — build games together`,
                 ...htmlWebpackPluginCommon
             }),
             new HtmlWebpackPlugin({

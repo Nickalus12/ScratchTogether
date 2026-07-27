@@ -16,12 +16,20 @@ const defaultServerUrl = () => {
 const apiBase = () => (location.port === '8601' ? `http://${location.hostname}:4455` : '');
 const homeBase = () => (location.port === '8601' ? `http://${location.hostname}:4455` : '');
 
-// /r/<slug> is the canonical room URL; ?room= still works for old links.
+/* TurboWarp's router rewrites the address bar as the project loads and drops
+ * the query string with it, so the room is remembered per tab — otherwise a
+ * refresh silently lands you in the editor with no room. */
+const ROOM_KEY = 'sq_room';
+
 const roomFromLocation = () => {
-    const path = (location.pathname.match(/^\/r\/([A-Za-z0-9_-]+)/) || [])[1];
-    if (path) return path;
-    const params = new URLSearchParams(location.search);
-    return (params.get('room') || '').trim();
+    const fromPath = (location.pathname.match(/^\/r\/([A-Za-z0-9_-]+)/) || [])[1];
+    const fromQuery = (new URLSearchParams(location.search).get('room') || '').trim();
+    const room = fromPath || fromQuery;
+    try {
+        if (room) sessionStorage.setItem(ROOM_KEY, room);
+        else return sessionStorage.getItem(ROOM_KEY) || '';
+    } catch (e) { /* private mode */ }
+    return room;
 };
 
 const splash = message => {
