@@ -9,6 +9,9 @@ recovery is a four-word code). Rooms are private, unlisted or public, with
 owner/editor/viewer roles and invite links. Everyone gets a colour and a cursor
 style, and you see each other's cursors move as you build.
 
+**[Join the Discord](https://discord.gg/XXjWxX9wrM)** — share what you built,
+find someone to build with, or report something broken.
+
 > Not affiliated with or endorsed by the Scratch Team. "Scratch" is their
 > trademark and is used here only to describe what this interoperates with.
 

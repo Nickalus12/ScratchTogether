@@ -24,6 +24,7 @@ import {
     closeTelemetryModal,
     openExtensionLibrary
 } from '../reducers/modals';
+import {setProjectTitle} from '../reducers/project-title';
 
 import FontLoaderHOC from '../lib/font-loader-hoc.jsx';
 import LocalizationHOC from '../lib/localization-hoc.jsx';
@@ -60,9 +61,15 @@ class GUI extends React.Component {
         this.props.onStorageInit(storage);
         this.props.onVmInit(this.props.vm);
         setProjectIdMetadata(this.props.projectId);
-        collab.init(this.props.vm);
+        collab.init(this.props.vm, {setProjectTitle: this.props.onSetProjectTitle});
     }
     componentDidUpdate (prevProps) {
+        // A room and its project share one name. Renaming in the title box
+        // renames the room for everyone; collab ignores echoes of titles it
+        // just applied itself, so this cannot ping-pong.
+        if (this.props.projectTitle !== prevProps.projectTitle) {
+            collab.setRoomTitle(this.props.projectTitle);
+        }
         if (this.props.projectId !== prevProps.projectId) {
             if (this.props.projectId !== null) {
                 this.props.onUpdateProjectId(this.props.projectId);
@@ -133,6 +140,8 @@ GUI.propTypes = {
     onVmInit: PropTypes.func,
     projectHost: PropTypes.string,
     projectId: PropTypes.oneOfType([PropTypes.string, PropTypes.number]),
+    projectTitle: PropTypes.string,
+    onSetProjectTitle: PropTypes.func,
     telemetryModalVisible: PropTypes.bool,
     vm: PropTypes.instanceOf(VM).isRequired
 };
@@ -166,6 +175,7 @@ const mapStateToProps = state => {
         isShowingProject: getIsShowingProject(loadingState),
         loadingStateVisible: state.scratchGui.modals.loadingProject,
         projectId: state.scratchGui.projectState.projectId,
+        projectTitle: state.scratchGui.projectTitle,
         soundsTabVisible: state.scratchGui.editorTab.activeTabIndex === SOUNDS_TAB_INDEX,
         targetIsStage: (
             state.scratchGui.targets.stage &&
@@ -190,7 +200,8 @@ const mapDispatchToProps = dispatch => ({
     onActivateSoundsTab: () => dispatch(activateTab(SOUNDS_TAB_INDEX)),
     onRequestCloseBackdropLibrary: () => dispatch(closeBackdropLibrary()),
     onRequestCloseCostumeLibrary: () => dispatch(closeCostumeLibrary()),
-    onRequestCloseTelemetryModal: () => dispatch(closeTelemetryModal())
+    onRequestCloseTelemetryModal: () => dispatch(closeTelemetryModal()),
+    onSetProjectTitle: title => dispatch(setProjectTitle(title))
 });
 
 const ConnectedGUI = injectIntl(connect(

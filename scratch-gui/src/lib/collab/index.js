@@ -57,8 +57,14 @@ const state = {
     pointerDown: false, // mid-stroke guard: remote paint defers until pointer release
     selfId: null,
     role: 'editor',
-    canEdit: true
+    canEdit: true,
+    // Last title we pushed into the GUI. Renames echoed back from the server
+    // must not bounce out again as a fresh rename.
+    appliedTitle: null
 };
+
+// Set by gui.jsx so collab can drive the project title box.
+let hooks = {};
 
 const trimPaintBase = () => {
     while (state.paintBase.size > 12) {
@@ -1465,6 +1471,7 @@ const wireSocket = () => {
         });
         overlay.setPeers(msg.peers, msg.id);
         overlay.setProjects(msg.projects);
+        applyRoomTitle(msg.title || msg.room);
         overlay.toast(
             isReconnect ? '🔌 Reconnected!' : `Welcome, ${overlay.self.name}! Room: ${msg.title || msg.room}`,
             msg.color
@@ -1503,6 +1510,9 @@ const wireSocket = () => {
                 Object.assign({}, overlay.self, {cursor: msg.cursor}));
         }
         rebuildPeerCache();
+    });
+    client.on('room-renamed', msg => {
+        applyRoomTitle(msg.title);
     });
     client.on('kicked', msg => {
         overlay.toast(msg.reason === 'room-deleted' ?
@@ -1556,7 +1566,8 @@ const wireSocket = () => {
 
 // ------------------------------------------------------------- public API ---
 
-const init = async vm => {
+const init = async (vm, initHooks) => {
+    hooks = initHooks || {};
     if (state.initialized) return;
     state.initialized = true;
     state.vm = vm;
@@ -1624,7 +1635,24 @@ const setAppearance = ({color, style}) => {
     return true;
 };
 
+const applyRoomTitle = title => {
+    const clean = String(title || '').slice(0, 60);
+    if (!clean || clean === state.appliedTitle) return;
+    state.appliedTitle = clean;
+    if (hooks.setProjectTitle) hooks.setProjectTitle(clean);
+};
+
+// Renaming the project renames the room. Owner-gated on the server.
+const setRoomTitle = title => {
+    const clean = String(title || '')
+        .trim()
+        .slice(0, 60);
+    if (!state.active || !clean || clean === state.appliedTitle) return;
+    state.appliedTitle = clean;
+    client.send({type: 'set-room-title', title: clean});
+};
+
 export default {
     init, attachWorkspace, detachWorkspace, suspendWorkspaceEvents,
-    resumeWorkspaceEvents, paintRev, setAppearance
+    resumeWorkspaceEvents, paintRev, setAppearance, setRoomTitle
 };
