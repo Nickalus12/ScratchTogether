@@ -54,7 +54,10 @@ const state = {
     // Per-costume paint bases: for svg the last export/apply text (stroke-diff
     // base), for bitmaps the freshest known full pixels (patch base + shadow).
     paintBase: new Map(), // "target|index|svg" -> text; "target|index|bmp" -> {pixels,width,height}
-    pointerDown: false // mid-stroke guard: remote paint defers until pointer release
+    pointerDown: false, // mid-stroke guard: remote paint defers until pointer release
+    selfId: null,
+    role: 'editor',
+    canEdit: true
 };
 
 const trimPaintBase = () => {
@@ -1444,13 +1447,25 @@ const wireSocket = () => {
         state.active = true;
         startHousekeeping();
         overlay.setConnected(true);
-        overlay.setSelf(client.session.name, msg.color, msg.room);
+        state.selfId = msg.id;
+        state.role = msg.role || 'editor';
+        state.canEdit = msg.canEdit !== false;
+        overlay.setSelf(msg.me ? msg.me.displayName : client.session.name, msg.color, msg.room, {
+            handle: msg.me && msg.me.handle,
+            isChild: !!(msg.me && msg.me.isChild),
+            cursor: msg.cursor,
+            role: state.role,
+            canEdit: state.canEdit,
+            title: msg.title,
+            visibility: msg.visibility
+        });
         overlay.setPeers(msg.peers, msg.id);
         overlay.setProjects(msg.projects);
         overlay.toast(
-            isReconnect ? '🔌 Reconnected!' : `Welcome, ${client.session.name}! Room: ${msg.room}`,
+            isReconnect ? '🔌 Reconnected!' : `Welcome, ${overlay.self.name}! Room: ${msg.title || msg.room}`,
             msg.color
         );
+        if (!state.canEdit) overlay.toast('👀 You are watching — ask the owner for edit access', '#8a8fa3');
         rebuildTargetIndex();
         state.roomVersion = typeof msg.version === 'number' ? msg.version : 0;
         // First one in an empty room seeds it with the current project.
@@ -1477,8 +1492,20 @@ const wireSocket = () => {
         // Keep housekeeping running — reconnect is expected; stop only on solo exit.
         netEmit('disconnected', {});
     });
+    client.on('peer-updated', msg => {
+        overlay.updatePeerAppearance(msg.id, {color: msg.color, style: msg.cursor});
+        if (msg.id === state.selfId && overlay.self) {
+            overlay.setSelf(overlay.self.name, msg.color, overlay.self.room,
+                Object.assign({}, overlay.self, {cursor: msg.cursor}));
+        }
+        rebuildPeerCache();
+    });
+    client.on('kicked', msg => {
+        overlay.toast(msg.reason === 'room-deleted' ?
+            '🚪 This room was deleted' : '🔒 Your access to this room changed', '#e8386d');
+    });
     client.on('peer-joined', msg => {
-        overlay.addPeer(msg.peer.id, msg.peer.name, msg.peer.color);
+        overlay.addPeer(msg.peer.id, msg.peer.name, msg.peer.color, msg.peer.cursor);
         rebuildPeerCache();
         overlay.toast(`👋 ${msg.peer.name} joined!`, msg.peer.color);
         // Re-announce so the newcomer immediately sees our sprite/status.
@@ -1585,4 +1612,15 @@ const detachWorkspace = () => {
     state.ScratchBlocks = null;
 };
 
-export default {init, attachWorkspace, detachWorkspace, suspendWorkspaceEvents, resumeWorkspaceEvents, paintRev};
+// Appearance changes go over the socket so peers repaint immediately; the
+// server persists them to the account.
+const setAppearance = ({color, style}) => {
+    if (!state.active) return false;
+    client.send({type: 'appearance', color, cursor: style});
+    return true;
+};
+
+export default {
+    init, attachWorkspace, detachWorkspace, suspendWorkspaceEvents,
+    resumeWorkspaceEvents, paintRev, setAppearance
+};

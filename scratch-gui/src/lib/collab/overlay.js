@@ -7,6 +7,32 @@
 // cursors through the local zoom/pan (view <-> project conversion).
 import paper from '@turbowarp/paper';
 
+// Ids must match CURSORS in collab-server/appearance.js. The hotspot of every
+// shape is its top-left corner, so they all point the same way.
+const CURSOR_SHAPES = {
+    arrow: {w: 18, h: 22, box: '0 0 18 22', stroke: 1.2,
+        d: 'M1 1 L1 16 L5.5 12.5 L8.5 20 L11.5 18.5 L8.5 11.5 L14 11 Z'},
+    hand: {w: 20, h: 22, box: '0 0 20 22', stroke: 1.1,
+        d: 'M4 1 C4 0 6 0 6 1 L6 8 L7 8 L7 2 C7 1 9 1 9 2 L9 8 L10 8 L10 3 C10 2 12 2 12 3 ' +
+           'L12 9 L13 9 L13 6 C13 5 15 5 15 6 L15 14 C15 19 12 21 9 21 C5 21 4 18 3 15 ' +
+           'L1 10 C1 9 3 8 4 10 Z'},
+    pencil: {w: 20, h: 20, box: '0 0 20 20', stroke: 1.1,
+        d: 'M1 19 L2 14 L14 2 L18 6 L6 18 Z M12 4 L16 8'},
+    star: {w: 20, h: 20, box: '0 0 20 20', stroke: 1.1,
+        d: 'M2 2 L9 6.5 L16.5 2.5 L13.5 10 L18 16.5 L10 15 L4.5 19 L4.5 11 Z'},
+    rocket: {w: 20, h: 22, box: '0 0 20 22', stroke: 1.1,
+        d: 'M2 2 C10 2 16 8 16 16 L11 14 L7 18 L5 12 L1 9 Z'},
+    heart: {w: 20, h: 20, box: '0 0 20 20', stroke: 1.1,
+        d: 'M1 1 C1 1 3 0 5 2 L10 7 C13 4 17 5 18 8 C19 12 15 16 10 19 ' +
+           'C6 15 2 11 1 7 Z'},
+    sparkle: {w: 20, h: 22, box: '0 0 20 22', stroke: 1,
+        d: 'M1 1 C3 6 6 9.5 11.5 11.5 C6 13.5 3 17 1 21 C1.6 14 1.6 8 1 1 Z ' +
+           'M14.5 2 L16 5.5 L19.5 7 L16 8.5 L14.5 12 L13 8.5 L9.5 7 L13 5.5 Z'},
+    cat: {w: 20, h: 20, box: '0 0 20 20', stroke: 1.1,
+        d: 'M1 1 L5 7 L12 7 L16 1 L16 9 C18 11 18 15 15 17 C11 20 6 20 3 17 ' +
+           'C0 15 0 11 2 9 Z'}
+};
+
 class Overlay {
     constructor () {
         this.peers = new Map(); // id -> {name, color, status, sprite, cursor:{x,y,sprite}}
@@ -118,8 +144,8 @@ class Overlay {
         }
     }
 
-    setSelf (name, color, room) {
-        this.self = {name, color, room};
+    setSelf (name, color, room, extra) {
+        this.self = Object.assign({name, color, room}, extra || {});
         this._notify();
     }
 
@@ -128,8 +154,11 @@ class Overlay {
         this._notify();
     }
 
-    addPeer (id, name, color) {
-        this.peers.set(id, {name, color, status: 'here', sprite: null, cursor: null});
+    addPeer (id, name, color, style) {
+        this.peers.set(id, {
+            name, color, style: style || 'arrow',
+            status: 'here', sprite: null, cursor: null
+        });
         this._notify();
     }
 
@@ -141,8 +170,26 @@ class Overlay {
     setPeers (list, selfId) {
         this.peers.clear();
         list.forEach(p => {
-            if (p.id !== selfId) this.peers.set(p.id, {name: p.name, color: p.color, status: 'here', sprite: null, cursor: null});
+            if (p.id !== selfId) {
+                this.peers.set(p.id, {
+                    name: p.name, color: p.color, style: p.cursor || 'arrow',
+                    status: 'here', sprite: null, cursor: null
+                });
+            }
         });
+        this._notify();
+    }
+
+    // Live colour/cursor change: drop the cached node so it rebuilds once.
+    updatePeerAppearance (id, {color, style}) {
+        const p = this.peers.get(id);
+        if (!p) return;
+        if (color) p.color = color;
+        if (style) p.style = style;
+        if (p._cursorEl) {
+            p._cursorEl.remove();
+            p._cursorEl = null;
+        }
         this._notify();
     }
 
@@ -270,18 +317,20 @@ class Overlay {
     _cursorEl (id, p) {
         if (p._cursorEl && p._cursorEl.isConnected) return p._cursorEl;
         let el = this.cursorLayer.querySelector(`[data-peer="${id}"]`);
-        if (!el) {
-            el = document.createElement('div');
-            el.dataset.peer = id;
-            el.style.cssText = 'position:absolute;left:0;top:0;will-change:transform;display:none';
-            el.innerHTML = `
-              <svg width="18" height="22" viewBox="0 0 18 22" style="display:block;filter:drop-shadow(0 1px 2px rgba(0,0,0,.4))">
-                <path d="M1 1 L1 16 L5.5 12.5 L8.5 20 L11.5 18.5 L8.5 11.5 L14 11 Z" fill="${p.color}" stroke="#fff" stroke-width="1.2"/>
-              </svg>
-              <div style="background:${p.color};color:#fff;font:bold 11px Helvetica,Arial;border-radius:4px;
-                          padding:2px 6px;margin:-2px 0 0 10px;white-space:nowrap">${this._esc(p.name)}</div>`;
-            this.cursorLayer.appendChild(el);
-        }
+        if (el) el.remove();
+        el = document.createElement('div');
+        el.dataset.peer = id;
+        el.style.cssText = 'position:absolute;left:0;top:0;will-change:transform;display:none';
+        const shape = CURSOR_SHAPES[p.style] || CURSOR_SHAPES.arrow;
+        el.innerHTML = `
+          <svg width="${shape.w}" height="${shape.h}" viewBox="${shape.box}"
+               style="display:block;filter:drop-shadow(0 1px 2px rgba(0,0,0,.4))">
+            <path d="${shape.d}" fill="${p.color}" stroke="#fff" stroke-width="${shape.stroke}"
+                  stroke-linejoin="round"/>
+          </svg>
+          <div style="background:${p.color};color:#fff;font:bold 11px Helvetica,Arial;border-radius:4px;
+                      padding:2px 6px;margin:-2px 0 0 10px;white-space:nowrap">${this._esc(p.name)}</div>`;
+        this.cursorLayer.appendChild(el);
         p._cursorEl = el;
         return el;
     }
