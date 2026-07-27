@@ -15,3 +15,9 @@ collab-server/users.json
 # local scratch files
 *.log
 collab-integration.patch
+
+# sqlite metadata store — runtime state
+collab-server/*.db
+collab-server/*.db-wal
+collab-server/*.db-shm
+collab-server/squiggle.db*
