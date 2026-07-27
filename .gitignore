@@ -21,3 +21,6 @@ collab-server/*.db
 collab-server/*.db-wal
 collab-server/*.db-shm
 collab-server/squiggle.db*
+
+# the generated starter is committed on purpose — it ships with the server
+!collab-server/starter/welcome.sb3
