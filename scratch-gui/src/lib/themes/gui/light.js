@@ -81,6 +81,9 @@ const guiColors = {
 
     'link-color': '#2255dd',
 
+    /* Scratch marks the selected library tag with the Variables orange. */
+    'library-tag-active': 'var(--data-primary)',
+
     'filter-icon-black': 'none',
     'filter-icon-gray': 'grayscale(100%)',
     'filter-icon-white': 'none',

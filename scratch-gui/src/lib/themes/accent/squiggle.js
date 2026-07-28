@@ -15,6 +15,8 @@ const guiColors = {
 
     'drop-highlight': '#a855f7',
 
+    'library-tag-active': '#a855f7',
+
     'menu-bar-background-image': 'linear-gradient(135deg, #7c5cff 0%, #a855f7 100%)'
 };
 
