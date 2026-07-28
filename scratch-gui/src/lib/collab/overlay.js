@@ -340,13 +340,24 @@ class Overlay {
 
     // ---- toasts ----
 
+    // The colour identifies who the message is about, so it stays — as a dot
+    // rather than the whole pill, which lets the toast match the app's surfaces.
     toast (text, color) {
         const t = document.createElement('div');
-        t.textContent = text;
+        const dot = document.createElement('span');
+        dot.style.cssText = [
+            'width:9px', 'height:9px', 'border-radius:50%', 'flex:0 0 auto',
+            `background:${color || '#7c5cff'}`
+        ].join(';');
+        t.appendChild(dot);
+        t.appendChild(document.createTextNode(text));
         t.style.cssText = [
             'position:fixed', 'top:60px', 'left:50%', 'transform:translateX(-50%)', 'z-index:99998',
-            `background:${color || '#4c97ff'}`, 'color:#fff', 'padding:9px 20px', 'border-radius:20px',
-            'font:bold 14px Helvetica,Arial', 'box-shadow:0 4px 14px rgba(0,0,0,.25)',
+            'display:flex', 'align-items:center', 'gap:9px',
+            'background:#161c36', 'color:#f2f4fb', 'padding:10px 18px', 'border-radius:14px',
+            'border:1px solid rgba(255,255,255,.11)',
+            'font:600 13.5px ui-rounded,"Segoe UI",Helvetica,Arial,sans-serif',
+            'box-shadow:0 18px 50px -12px rgba(0,0,0,.7)',
             'opacity:0', 'transition:opacity .25s'
         ].join(';');
         document.body.appendChild(t);
