@@ -33,6 +33,7 @@ import ChangeUsername from '../../containers/tw-change-username.jsx';
 import CloudVariablesToggler from '../../containers/tw-cloud-toggler.jsx';
 import TWSaveStatus from './tw-save-status.jsx';
 import CollabPresence from './collab-presence.jsx';
+import OutlinePanel from './outline-panel.jsx';
 import TWNews from './tw-news.jsx';
 
 import {openTipsLibrary, openSettingsModal, openRestorePointModal} from '../../reducers/modals';
@@ -1039,6 +1040,7 @@ class MenuBar extends React.Component {
                 </div>
 
                 <div className={styles.accountInfoGroup}>
+                    <OutlinePanel />
                     <CollabPresence />
                     <TWSaveStatus
                         showSaveFilePicker={this.props.showSaveFilePicker}

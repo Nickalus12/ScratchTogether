@@ -45,6 +45,8 @@ import LoadScratchBlocksHOC from '../lib/tw-load-scratch-blocks-hoc.jsx';
 import {findTopBlock} from '../lib/backpack/code-payload.js';
 import {gentlyRequestPersistentStorage} from '../lib/tw-persistent-storage.js';
 import collab from '../lib/collab';
+import {patchComments} from '../lib/annotations/comment-chrome';
+import {setOutlineWorkspace} from '../lib/annotations/workspace-ref';
 
 // TW: Strings we add to scratch-blocks are localized here
 const messages = defineMessages({
@@ -140,6 +142,8 @@ class Blocks extends React.Component {
         this.ScratchBlocks.prompt = this.handlePromptStart;
         this.ScratchBlocks.statusButtonCallback = this.handleConnectionModalStart;
         this.ScratchBlocks.recordSoundCallback = this.handleOpenSoundRecorder;
+
+        patchComments(this.ScratchBlocks);
 
         this.ScratchBlocks.FieldColourSlider.activateEyedropper_ = this.props.onActivateColorPicker;
         this.ScratchBlocks.Procedures.externalProcedureDefCallback = this.props.onActivateCustomProcedures;
@@ -371,9 +375,11 @@ class Blocks extends React.Component {
         this.props.vm.addListener('PERIPHERAL_CONNECTED', this.handleStatusButtonUpdate);
         this.props.vm.addListener('PERIPHERAL_DISCONNECTED', this.handleStatusButtonUpdate);
         collab.attachWorkspace(this.workspace, this.ScratchBlocks);
+        setOutlineWorkspace(this.workspace);
     }
     detachVM () {
         collab.detachWorkspace();
+        setOutlineWorkspace(null);
         this.props.vm.removeListener('SCRIPT_GLOW_ON', this.onScriptGlowOn);
         this.props.vm.removeListener('SCRIPT_GLOW_OFF', this.onScriptGlowOff);
         this.props.vm.removeListener('BLOCK_GLOW_ON', this.onBlockGlowOn);
