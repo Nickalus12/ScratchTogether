@@ -60,6 +60,27 @@ document.addEventListener('mousedown', e => {
     if (menuEl && !menuEl.contains(e.target)) closeMenu();
 }, true);
 
+/* Press-vs-drag settling happens at DOCUMENT capture, not on the header:
+ * during a drag Blockly's gesture binds its own document-capture mouseup and
+ * stops propagation, so a header-level listener never hears it. These are
+ * registered at module load — before any gesture's — so they always run first. */
+let activePress = null; // {x, y, title, onTitle}
+const settlePress = e => {
+    if (!activePress) return;
+    const p = (e.changedTouches && e.changedTouches[0]) || e;
+    const press = activePress;
+    activePress = null;
+    const dx = p.clientX - press.x;
+    const dy = p.clientY - press.y;
+    if ((dx * dx) + (dy * dy) < 25 && press.onTitle) {
+        // Blockly's own click handling may still move focus; take it after.
+        setTimeout(() => press.title.focus(), 0);
+    }
+};
+for (const ev of ['mouseup', 'pointerup', 'touchend']) {
+    document.addEventListener(ev, settlePress, true);
+}
+
 const openTypeMenu = (comment, anchor) => {
     closeMenu();
     const current = parse(comment.content_ || '');
@@ -119,11 +140,48 @@ const buildHeader = comment => {
     body.appendChild(wrap);
     fo.appendChild(body);
 
-    // The top bar is a drag handle; without this, using the header drags the
-    // comment instead of typing in it.
-    for (const ev of ['mousedown', 'pointerdown', 'touchstart']) {
-        wrap.addEventListener(ev, e => e.stopPropagation(), true);
-    }
+    // The top bar doubles as the comment's ONLY drag handle, so the header
+    // must not swallow presses — for sections (click-through interior) that
+    // would leave nothing draggable at all. Instead: let the press start a
+    // Blockly drag, and only treat it as "edit the title" when the pointer
+    // comes back up without having moved. While the title is focused, presses
+    // stay local so clicking moves the caret rather than the comment.
+    const pt = e => (e.touches && e.touches[0]) || e;
+    // Blockly refuses to start a gesture when the event target is a text input
+    // (Blockly.utils.isTargetInput), so propagation alone can never drag from
+    // the title. Re-aim the press at the comment's own drag bar: block the
+    // input's native focus-on-press and hand Blockly a synthetic mousedown at
+    // the same spot. A clean click (no movement) still becomes "edit the
+    // title" via settlePress.
+    //
+    // Only mousedown/touchstart are intercepted — cancelling POINTERDOWN would
+    // suppress the whole compatibility mouse stream (no mousemove/mouseup ever
+    // fires) and freeze the drag it just started.
+    const onDown = e => {
+        if (document.activeElement === title) {
+            e.stopPropagation(); // already editing — caret moves, not drags
+            return;
+        }
+        activePress = {x: pt(e).clientX, y: pt(e).clientY, title, onTitle: e.target === title};
+        if ((e.target === title || e.target === wrap) && comment.svgHandleTarget_) {
+            e.preventDefault();
+            e.stopPropagation();
+            comment.svgHandleTarget_.dispatchEvent(new MouseEvent('mousedown', {
+                bubbles: true, cancelable: true, button: 0,
+                clientX: pt(e).clientX, clientY: pt(e).clientY
+            }));
+        }
+    };
+    const onPointerDown = e => {
+        if (document.activeElement === title) {
+            e.stopPropagation();
+            return;
+        }
+        activePress = {x: e.clientX, y: e.clientY, title, onTitle: e.target === title};
+    };
+    wrap.addEventListener('mousedown', onDown, true);
+    wrap.addEventListener('touchstart', onDown, true);
+    wrap.addEventListener('pointerdown', onPointerDown, true);
 
     typeBtn.addEventListener('click', e => {
         e.stopPropagation();
