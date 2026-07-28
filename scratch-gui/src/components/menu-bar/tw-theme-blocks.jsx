@@ -7,7 +7,14 @@ import {connect} from 'react-redux';
 import check from './check.svg';
 import dropdownCaret from './dropdown-caret.svg';
 import {MenuItem, Submenu} from '../menu/menu.jsx';
-import {BLOCKS_CUSTOM, BLOCKS_DARK, BLOCKS_HIGH_CONTRAST, BLOCKS_THREE, Theme} from '../../lib/themes/index.js';
+import {
+    BLOCKS_CUSTOM,
+    BLOCKS_DARK,
+    BLOCKS_HIGH_CONTRAST,
+    BLOCKS_SQUIGGLE,
+    BLOCKS_THREE,
+    Theme
+} from '../../lib/themes/index.js';
 import {openBlocksThemeMenu, blocksThemeMenuOpen, closeSettingsMenu} from '../../reducers/menus.js';
 import {setTheme} from '../../reducers/theme.js';
 import {persistTheme} from '../../lib/themes/themePersistance.js';
@@ -15,6 +22,7 @@ import styles from './settings-menu.css';
 import threeIcon from './tw-blocks-three.svg';
 import highContrastIcon from './tw-blocks-high-contrast.svg';
 import darkIcon from './tw-blocks-dark.svg';
+import squiggleIcon from './sq-blocks-squiggle.svg';
 import customIcon from './tw-blocks-custom.svg';
 import openLinkIcon from './tw-open-link.svg';
 
@@ -28,6 +36,11 @@ const options = defineMessages({
         defaultMessage: 'High Contrast',
         description: 'Name of the high contrast block colors.',
         id: 'tw.blockColors.highContrast'
+    },
+    [BLOCKS_SQUIGGLE]: {
+        defaultMessage: 'Squiggle',
+        description: 'Name of the navy-tinted block colors that match the Squiggle theme.',
+        id: 'sq.blockColors.squiggle'
     },
     [BLOCKS_DARK]: {
         defaultMessage: 'Dark (Beta)',
@@ -45,6 +58,7 @@ const icons = {
     [BLOCKS_THREE]: threeIcon,
     [BLOCKS_HIGH_CONTRAST]: highContrastIcon,
     [BLOCKS_DARK]: darkIcon,
+    [BLOCKS_SQUIGGLE]: squiggleIcon,
     [BLOCKS_CUSTOM]: customIcon
 };
 
@@ -122,6 +136,7 @@ const BlocksThemeMenu = ({
         <Submenu place={isRtl ? 'left' : 'right'}>
             {[
                 BLOCKS_THREE,
+                BLOCKS_SQUIGGLE,
                 BLOCKS_HIGH_CONTRAST,
                 BLOCKS_DARK,
                 ...(onOpenCustomSettings ? [BLOCKS_CUSTOM] : [])

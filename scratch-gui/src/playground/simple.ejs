@@ -9,6 +9,10 @@
         background: #111;
       }
 
+      body[data-splash-theme="squiggle"] {
+        background: #0d1020;
+      }
+
       noscript {
         font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
       }
@@ -35,7 +39,7 @@
         } else if (themeSetting) {
           try {
             var parsed = JSON.parse(themeSetting);
-            if (parsed.gui === 'dark' || parsed.gui === 'light') {
+            if (parsed.gui === 'dark' || parsed.gui === 'light' || parsed.gui === 'squiggle') {
               theme = parsed.gui;
             }
           } catch (e) {
@@ -44,7 +48,7 @@
         }
 
         if (!theme) {
-          theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+          theme = 'squiggle';
         }
 
         document.body.setAttribute('data-splash-theme', theme);

@@ -35,6 +35,10 @@
         background-color: #333;
         color: white;
       }
+      .splash-screen[data-theme="squiggle"] {
+        background-color: #0d1020;
+        color: #f2f4fb;
+      }
       .splash-screen > * {
         max-width: 80%;
       }
@@ -101,7 +105,7 @@
         'use strict';
 
         var theme = '';
-        var accent = '#ff4c4c';
+        var accent = '#7c5cff';
 
         try {
           var themeSetting = localStorage.getItem('tw:theme');
@@ -119,8 +123,10 @@
               accent = '#855cd6';
             } else if (parsed.accent === 'blue') {
               accent = '#4c97ff';
+            } else if (parsed.accent === 'red' || parsed.accent === 'rainbow') {
+              accent = '#ff4c4c';
             }
-            if (parsed.gui === 'dark' || parsed.gui === 'light') {
+            if (parsed.gui === 'dark' || parsed.gui === 'light' || parsed.gui === 'squiggle') {
               theme = parsed.gui;
             }
           } catch (e) {
@@ -129,12 +135,12 @@
         }
 
         if (!theme) {
-          theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+          theme = 'squiggle';
         }
 
         var splash = document.querySelector('.spash-waiting-for-js');
         splash.setAttribute('data-theme', theme);
-        if (theme !== 'dark') {
+        if (theme === 'light') {
           <% if (htmlWebpackPlugin.options.isEditor) { %>
             splash.style.backgroundColor = accent;
             splash.style.color = 'white';
