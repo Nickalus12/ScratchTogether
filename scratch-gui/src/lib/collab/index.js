@@ -1640,6 +1640,11 @@ const applyRoomTitle = title => {
     if (!clean || clean === state.appliedTitle) return;
     state.appliedTitle = clean;
     if (hooks.setProjectTitle) hooks.setProjectTitle(clean);
+    // The presence panel shows the title too, so keep it in step.
+    if (overlay.self) {
+        overlay.setSelf(overlay.self.name, overlay.self.color, overlay.self.room,
+            Object.assign({}, overlay.self, {title: clean}));
+    }
 };
 
 // Renaming the project renames the room. Owner-gated on the server.

@@ -15,13 +15,48 @@ const statusIcon = status => {
     return '✏️';
 };
 
-const rowStyle = {
+// Same tokens as the dashboard in collab-server/home.html — the panel is part
+// of the app, not part of the editor chrome it happens to hang off.
+const T = {
+    surface: '#161c36',
+    card: 'rgba(255, 255, 255, 0.055)',
+    line: 'rgba(255, 255, 255, 0.11)',
+    ink: '#f2f4fb',
+    dim: '#a3abc8',
+    faint: '#6d769a',
+    good: '#34d399',
+    warn: '#fbbf24',
+    accentBg: 'linear-gradient(135deg, #7c5cff, #a855f7)',
+    font: 'ui-rounded, "SF Pro Rounded", "Segoe UI Variable", Nunito, system-ui, sans-serif'
+};
+
+const label = {
+    fontSize: '10.5px',
+    fontWeight: 800,
+    letterSpacing: '0.6px',
+    textTransform: 'uppercase',
+    color: T.faint
+};
+
+const btn = {
+    padding: '8px 13px',
+    borderRadius: '9px',
+    fontSize: '12.5px',
+    fontWeight: 700,
+    cursor: 'pointer',
+    color: T.ink,
+    background: T.card,
+    border: `1px solid ${T.line}`,
+    fontFamily: 'inherit'
+};
+
+const personRow = {
     display: 'flex',
     alignItems: 'center',
     gap: '8px',
-    padding: '7px 12px',
+    padding: '4px 0',
     fontSize: '13px',
-    color: '#575e75'
+    color: T.ink
 };
 
 const dot = (color, size) => ({
@@ -80,10 +115,7 @@ class CollabPresence extends React.Component {
     }
     inviteLink () {
         const {self} = this.state;
-        const url = new URL(location.href);
-        url.search = '';
-        url.searchParams.set('room', self ? self.room : 'family');
-        return url.toString();
+        return `${location.origin}/r/${self ? self.room : 'family'}`;
     }
     handleCopy () {
         const link = this.inviteLink();
@@ -99,6 +131,10 @@ class CollabPresence extends React.Component {
         const {self, connected, peers, open, copied} = this.state;
         if (!self) return null; // solo mode
 
+        // The slug is a URL detail — disambiguated with -2 when a name is
+        // taken — so it is the wrong thing to show a person.
+        const roomName = self.title || self.room;
+
         // Always-available way back to the dashboard — the editor is otherwise
         // a one-way door once you are in a room.
         const homeButton = (
@@ -109,9 +145,9 @@ class CollabPresence extends React.Component {
                     display: 'flex',
                     alignItems: 'center',
                     gap: '6px',
-                    background: 'rgba(0, 0, 0, 0.15)',
+                    background: 'rgba(0, 0, 0, 0.18)',
                     borderRadius: '15px',
-                    padding: '4px 11px',
+                    padding: '3px 11px',
                     marginRight: '6px',
                     color: '#fff',
                     fontSize: '12px',
@@ -146,18 +182,19 @@ class CollabPresence extends React.Component {
                     alignItems: 'center',
                     gap: '7px',
                     cursor: 'pointer',
-                    background: open ? 'rgba(0, 0, 0, 0.3)' : 'rgba(0, 0, 0, 0.15)',
+                    background: open ? 'rgba(124, 92, 255, 0.28)' : 'rgba(0, 0, 0, 0.18)',
+                    border: `1px solid ${open ? 'rgba(124, 92, 255, 0.6)' : 'transparent'}`,
                     borderRadius: '15px',
-                    padding: '4px 12px',
+                    padding: '3px 11px',
                     color: '#fff',
                     fontSize: '12px',
                     fontWeight: 'bold',
                     whiteSpace: 'nowrap',
                     userSelect: 'none'
                 }}
-                title={connected ? `Room "${self.room}" — click for details` : 'Reconnecting…'}
+                title={connected ? `${roomName} — click for details` : 'Reconnecting…'}
             >
-                <span style={dot(connected ? '#4caf50' : '#ff5722', 8)} />
+                <span style={dot(connected ? T.good : T.warn, 8)} />
                 <span style={{fontSize: '14px', lineHeight: 1}}>{'👥'}</span>
                 <span>{1 + peers.length}</span>
                 <span style={{opacity: 0.6, fontWeight: 'normal'}}>{'▾'}</span>
@@ -171,157 +208,197 @@ class CollabPresence extends React.Component {
                     position: 'fixed',
                     top: '52px',
                     right: '8px',
-                    width: '260px',
-                    background: '#fff',
-                    borderRadius: '10px',
-                    boxShadow: '0 8px 24px rgba(0, 0, 0, 0.35)',
+                    width: '290px',
+                    background: T.surface,
+                    border: `1px solid ${T.line}`,
+                    borderRadius: '16px',
+                    boxShadow: '0 18px 50px -12px rgba(0, 0, 0, 0.7)',
                     overflow: 'hidden',
                     zIndex: 1000,
-                    cursor: 'default'
+                    cursor: 'default',
+                    color: T.ink,
+                    fontFamily: T.font
                 }}
             >
-                <div
-                    style={{
-                        background: 'linear-gradient(90deg, #4c97ff, #9966ff)',
-                        color: '#fff',
-                        padding: '10px 12px'
-                    }}
-                >
-                    <div style={{fontSize: '10px', letterSpacing: '1px', opacity: 0.8, fontWeight: 'bold'}}>
-                        {'MULTIPLAYER ROOM'}
-                    </div>
-                    <div style={{display: 'flex', alignItems: 'center', gap: '8px', marginTop: '2px'}}>
-                        <span style={{fontSize: '17px', fontWeight: 'bold'}}>{self.room}</span>
+                <div style={{padding: '14px 15px 13px', borderBottom: `1px solid ${T.line}`}}>
+                    <div style={label}>{'Room'}</div>
+                    <div style={{display: 'flex', alignItems: 'center', gap: '8px', marginTop: '3px'}}>
                         <span
                             style={{
+                                fontSize: '17px',
+                                fontWeight: 800,
+                                letterSpacing: '-0.01em',
+                                overflow: 'hidden',
+                                textOverflow: 'ellipsis',
+                                whiteSpace: 'nowrap'
+                            }}
+                            title={roomName}
+                        >
+                            {roomName}
+                        </span>
+                        <span
+                            style={{
+                                marginLeft: 'auto',
+                                flexShrink: 0,
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '5px',
                                 fontSize: '10px',
-                                background: 'rgba(255, 255, 255, 0.25)',
-                                borderRadius: '8px',
-                                padding: '2px 7px',
-                                fontWeight: 'bold'
+                                fontWeight: 800,
+                                letterSpacing: '0.4px',
+                                textTransform: 'uppercase',
+                                color: connected ? T.good : T.warn
                             }}
                         >
-                            {connected ? 'CONNECTED' : 'RECONNECTING…'}
+                            <span style={dot(connected ? T.good : T.warn, 7)} />
+                            {connected ? 'Live' : 'Reconnecting'}
                         </span>
                     </div>
-                    <div
+                    <button
                         onClick={this.handleCopy}
                         style={{
-                            marginTop: '8px',
-                            background: 'rgba(255, 255, 255, 0.2)',
-                            borderRadius: '6px',
-                            padding: '5px 8px',
-                            fontSize: '11px',
-                            cursor: 'pointer',
-                            textAlign: 'center',
-                            fontWeight: 'bold'
+                            ...btn,
+                            width: '100%',
+                            marginTop: '11px',
+                            background: copied ? 'rgba(52, 211, 153, 0.16)' : T.accentBg,
+                            borderColor: copied ? 'rgba(52, 211, 153, 0.5)' : 'transparent',
+                            color: '#fff'
                         }}
                     >
-                        {copied ? '✓ Link copied — send it to your partner!' : '🔗 Copy invite link'}
-                    </div>
+                        {copied ? '✓ Copied — send it to your partner' : 'Copy invite link'}
+                    </button>
                 </div>
 
-                <div style={{padding: '4px 0'}}>
-                    <div style={rowStyle}>
+                <div style={{padding: '11px 15px 12px', borderBottom: `1px solid ${T.line}`}}>
+                    <div style={{...label, marginBottom: '7px'}}>
+                        {`In here · ${1 + peers.length}`}
+                    </div>
+                    <div style={personRow}>
                         <span style={dot(self.color)} />
-                        <span style={{fontWeight: 'bold'}}>{self.name}</span>
-                        <span style={{opacity: 0.5, fontSize: '11px'}}>{'(you)'}</span>
+                        <span style={{fontWeight: 700}}>{self.name}</span>
+                        <span style={{color: T.faint, fontSize: '11.5px'}}>{'you'}</span>
                     </div>
                     {peers.map(p => (
                         <div
                             key={p.id}
-                            style={rowStyle}
+                            style={personRow}
                         >
                             <span style={dot(p.color)} />
-                            <span style={{fontWeight: 'bold'}}>{p.name}</span>
-                            <span style={{marginLeft: 'auto', fontSize: '11px', opacity: 0.75, textAlign: 'right'}}>
-                                {`${statusIcon(p.status)} ${p.status && p.status !== 'here' ? p.status : 'online'}`}
-                                {p.sprite ? <div style={{opacity: 0.7}}>{`on ${p.sprite}`}</div> : null}
+                            <span style={{fontWeight: 700}}>{p.name}</span>
+                            <span
+                                style={{
+                                    marginLeft: 'auto',
+                                    fontSize: '11px',
+                                    color: T.faint,
+                                    textAlign: 'right',
+                                    whiteSpace: 'nowrap',
+                                    overflow: 'hidden',
+                                    textOverflow: 'ellipsis'
+                                }}
+                            >
+                                {p.sprite ? `${statusIcon(p.status)} ${p.sprite}` : statusIcon(p.status)}
                             </span>
                         </div>
                     ))}
                     {peers.length === 0 ? (
-                        <div style={{...rowStyle, opacity: 0.55, fontSize: '12px'}}>
-                            {'Nobody else yet — copy the invite link above!'}
+                        <div style={{fontSize: '12px', color: T.faint, padding: '3px 0 1px', lineHeight: 1.5}}>
+                            {'Just you so far. Send the invite link and build together.'}
                         </div>
                     ) : null}
                 </div>
 
-                <div style={{borderTop: '1px solid #e5e8f0', padding: '8px 12px 10px'}}>
-                    <div style={{fontSize: '10px', letterSpacing: '1px', color: '#8a8fa3', fontWeight: 'bold', marginBottom: '6px'}}>
-                        {'PROJECTS'}
-                    </div>
-                    <div style={{display: 'flex', gap: '6px', marginBottom: '8px'}}>
+                <div style={{padding: '11px 15px 14px'}}>
+                    <div style={{...label, marginBottom: '7px'}}>{'Save to library'}</div>
+                    <div style={{display: 'flex', gap: '7px'}}>
                         <input
                             onChange={e => this.setState({saveName: e.target.value})}
                             onKeyDown={e => {
                                 if (e.key === 'Enter') this.handleSave();
                             }}
-                            placeholder="Name this project…"
+                            placeholder="Name this copy…"
                             style={{
                                 flex: 1,
                                 minWidth: 0,
-                                padding: '5px 8px',
-                                fontSize: '12px',
-                                border: '1px solid #d9dce5',
-                                borderRadius: '6px',
-                                outline: 'none'
+                                padding: '8px 10px',
+                                fontSize: '12.5px',
+                                color: T.ink,
+                                background: 'rgba(0, 0, 0, 0.3)',
+                                border: `1.5px solid ${T.line}`,
+                                borderRadius: '9px',
+                                outline: 'none',
+                                fontFamily: 'inherit'
                             }}
                             type="text"
                             value={this.state.saveName}
                         />
                         <button
+                            disabled={!this.state.saveName.trim()}
                             onClick={this.handleSave}
                             style={{
-                                border: 'none',
-                                background: '#4caf50',
-                                color: '#fff',
-                                borderRadius: '6px',
-                                padding: '5px 10px',
-                                fontSize: '12px',
-                                fontWeight: 'bold',
-                                cursor: 'pointer'
+                                ...btn,
+                                flexShrink: 0,
+                                opacity: this.state.saveName.trim() ? 1 : 0.45,
+                                cursor: this.state.saveName.trim() ? 'pointer' : 'default'
                             }}
                         >
-                            {'💾 Save'}
+                            {'Save'}
                         </button>
                     </div>
-                    <div style={{maxHeight: '150px', overflowY: 'auto'}}>
-                        {(this.state.projects || []).map(p => (
-                            <div
-                                key={p.id}
-                                style={{display: 'flex', alignItems: 'center', gap: '6px', padding: '4px 0', fontSize: '12px', color: '#575e75'}}
-                            >
-                                <div style={{flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'}}>
-                                    <span style={{fontWeight: 'bold'}}>{p.name}</span>
-                                    <div style={{fontSize: '10px', opacity: 0.6}}>
-                                        {`${p.owner} · ${new Date(p.updatedAt).toLocaleDateString()}`}
-                                    </div>
-                                </div>
-                                <button
-                                    onClick={() => this.handleOpenProject(p.id)}
+
+                    {(this.state.projects || []).length ? (
+                        <div style={{maxHeight: '164px', overflowY: 'auto', marginTop: '11px'}}>
+                            {this.state.projects.map(p => (
+                                <div
+                                    key={p.id}
                                     style={{
-                                        border: 'none',
-                                        borderRadius: '6px',
-                                        padding: '4px 9px',
-                                        fontSize: '11px',
-                                        fontWeight: 'bold',
-                                        cursor: 'pointer',
-                                        background: this.state.confirmOpenId === p.id ? '#ff9800' : '#4c97ff',
-                                        color: '#fff',
-                                        flexShrink: 0
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        gap: '8px',
+                                        padding: '7px 0',
+                                        borderTop: `1px solid ${T.line}`
                                     }}
                                 >
-                                    {this.state.confirmOpenId === p.id ? 'For everyone?' : 'Open'}
-                                </button>
-                            </div>
-                        ))}
-                        {(this.state.projects || []).length === 0 ? (
-                            <div style={{fontSize: '11px', color: '#8a8fa3'}}>
-                                {'No saved projects yet. The room auto-saves anyway — this is for named copies.'}
-                            </div>
-                        ) : null}
-                    </div>
+                                    <div style={{flex: 1, minWidth: 0}}>
+                                        <div
+                                            style={{
+                                                fontSize: '12.5px',
+                                                fontWeight: 700,
+                                                overflow: 'hidden',
+                                                textOverflow: 'ellipsis',
+                                                whiteSpace: 'nowrap'
+                                            }}
+                                        >
+                                            {p.name}
+                                        </div>
+                                        <div style={{fontSize: '10.5px', color: T.faint}}>
+                                            {new Date(p.updatedAt).toLocaleDateString()}
+                                        </div>
+                                    </div>
+                                    <button
+                                        onClick={() => this.handleOpenProject(p.id)}
+                                        style={{
+                                            ...btn,
+                                            flexShrink: 0,
+                                            padding: '5px 10px',
+                                            fontSize: '11.5px',
+                                            background: this.state.confirmOpenId === p.id ?
+                                                'rgba(251, 191, 36, 0.18)' : T.card,
+                                            borderColor: this.state.confirmOpenId === p.id ?
+                                                'rgba(251, 191, 36, 0.55)' : T.line,
+                                            color: this.state.confirmOpenId === p.id ? T.warn : T.ink
+                                        }}
+                                        title={'Opening replaces what everyone in this room is looking at'}
+                                    >
+                                        {this.state.confirmOpenId === p.id ? 'Replace for all?' : 'Open'}
+                                    </button>
+                                </div>
+                            ))}
+                        </div>
+                    ) : (
+                        <div style={{fontSize: '11.5px', color: T.faint, marginTop: '9px', lineHeight: 1.5}}>
+                            {'The room saves itself as you go — this is for keeping a named copy.'}
+                        </div>
+                    )}
                 </div>
             </div>
         ) : null;
