@@ -1022,7 +1022,7 @@ const startHousekeeping = () => {
     state.housekeepTimer = setInterval(housekeep, 1000);
 };
 
-const stopHousekeeping = () => {
+const _stopHousekeeping = () => {
     if (state.housekeepTimer) {
         clearInterval(state.housekeepTimer);
         state.housekeepTimer = null;
