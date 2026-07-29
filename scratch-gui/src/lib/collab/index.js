@@ -162,7 +162,7 @@ const rebuildTargetIndex = () => {
 const findTargetByName = name => {
     if (!state.vm || !name) return null;
     if (!state.targetByName) rebuildTargetIndex();
-    let t = state.targetByName.get(name);
+    const t = state.targetByName.get(name);
     if (t && t.blocks) return t;
     // Stale after rename/add — rebuild once.
     rebuildTargetIndex();
@@ -270,8 +270,12 @@ const sendSnapshotNow = async cacheOnly => {
         const reset = cacheOnly !== true && state.resetNextSnapshot === true;
         if (reset) state.resetNextSnapshot = false;
         client.send({
-            type: 'snapshot', b64, cacheOnly: cacheOnly === true,
-            basedOn: state.roomVersion, force, reset
+            type: 'snapshot',
+            b64,
+            cacheOnly: cacheOnly === true,
+            basedOn: state.roomVersion,
+            force,
+            reset
         });
     } catch (e) {
         // eslint-disable-next-line no-console
@@ -574,7 +578,9 @@ const wrapVm = vm => {
                     const asset = costumeObject && costumeObject.asset;
                     if (targetName && asset && asset.data && hasPeers()) {
                         client.send({
-                            type: 'vm-action', action: 'costumeAdd', target: targetName,
+                            type: 'vm-action',
+                            action: 'costumeAdd',
+                            target: targetName,
                             version: fixedVersion !== undefined ? fixedVersion : optVersion,
                             costume: {
                                 name: costumeObject.name,
@@ -606,7 +612,9 @@ const wrapVm = vm => {
                 const asset = soundObject && soundObject.asset;
                 if (targetName && asset && asset.data && hasPeers()) {
                     client.send({
-                        type: 'vm-action', action: 'soundAdd', target: targetName,
+                        type: 'vm-action',
+                        action: 'soundAdd',
+                        target: targetName,
                         sound: {
                             name: soundObject.name,
                             dataFormat: soundObject.dataFormat || asset.dataFormat
@@ -789,9 +797,14 @@ const wrapVm = vm => {
                     pngFromImageData(maskData)
                 ]);
                 client.send(Object.assign({}, meta, {
-                    encoding: 'png', mode: 'patch',
-                    px: diff.px, py: diff.py, pw: diff.pw, ph: diff.ph,
-                    data: patchB64, mask: maskB64
+                    encoding: 'png',
+                    mode: 'patch',
+                    px: diff.px,
+                    py: diff.py,
+                    pw: diff.pw,
+                    ph: diff.ph,
+                    data: patchB64,
+                    mask: maskB64
                 }));
             } else {
                 const fullB64 = await pngFromImageData(new ImageData(pixels, meta.width, meta.height));
@@ -1252,10 +1265,13 @@ const applyRemoteSvg = msg => {
     state.paintBase.set(`${msg.target}|${msg.costumeIndex}|svg`, final.svg);
     trimPaintBase();
     cachePaint({
-        type: 'vm-action', action: 'updateSvg',
-        target: msg.target, costumeIndex: msg.costumeIndex,
+        type: 'vm-action',
+        action: 'updateSvg',
+        target: msg.target,
+        costumeIndex: msg.costumeIndex,
         svg: final.svg,
-        rotationCenterX: final.rotationCenterX, rotationCenterY: final.rotationCenterY
+        rotationCenterX: final.rotationCenterX,
+        rotationCenterY: final.rotationCenterY
     });
 };
 
@@ -1272,11 +1288,17 @@ const commitRemoteBitmap = (msg, pixels) => {
     });
     trimPaintBase();
     cachePaint({
-        type: 'vm-action', action: 'updateBitmap', useShadow: true,
-        target: msg.target, costumeIndex: msg.costumeIndex,
-        width: msg.width, height: msg.height,
-        sourceWidth: msg.sourceWidth, sourceHeight: msg.sourceHeight,
-        rotationCenterX: msg.rotationCenterX, rotationCenterY: msg.rotationCenterY,
+        type: 'vm-action',
+        action: 'updateBitmap',
+        useShadow: true,
+        target: msg.target,
+        costumeIndex: msg.costumeIndex,
+        width: msg.width,
+        height: msg.height,
+        sourceWidth: msg.sourceWidth,
+        sourceHeight: msg.sourceHeight,
+        rotationCenterX: msg.rotationCenterX,
+        rotationCenterY: msg.rotationCenterY,
         bitmapResolution: msg.bitmapResolution
     });
     // Copy for the VM — the shadow keeps mutating on future patches.
@@ -1658,6 +1680,12 @@ const setRoomTitle = title => {
 };
 
 export default {
-    init, attachWorkspace, detachWorkspace, suspendWorkspaceEvents,
-    resumeWorkspaceEvents, paintRev, setAppearance, setRoomTitle
+    init,
+    attachWorkspace,
+    detachWorkspace,
+    suspendWorkspaceEvents,
+    resumeWorkspaceEvents,
+    paintRev,
+    setAppearance,
+    setRoomTitle
 };

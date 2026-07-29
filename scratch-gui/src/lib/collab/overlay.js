@@ -10,28 +10,52 @@ import paper from '@turbowarp/paper';
 // Ids must match CURSORS in collab-server/appearance.js. The hotspot of every
 // shape is its top-left corner, so they all point the same way.
 const CURSOR_SHAPES = {
-    arrow: {w: 18, h: 22, box: '0 0 18 22', stroke: 1.2,
+    arrow: {w: 18,
+        h: 22,
+        box: '0 0 18 22',
+        stroke: 1.2,
         d: 'M1 1 L1 16 L5.5 12.5 L8.5 20 L11.5 18.5 L8.5 11.5 L14 11 Z'},
-    hand: {w: 20, h: 22, box: '0 0 20 22', stroke: 1.1,
+    hand: {w: 20,
+        h: 22,
+        box: '0 0 20 22',
+        stroke: 1.1,
         d: 'M4 1 C4 0 6 0 6 1 L6 8 L7 8 L7 2 C7 1 9 1 9 2 L9 8 L10 8 L10 3 C10 2 12 2 12 3 ' +
            'L12 9 L13 9 L13 6 C13 5 15 5 15 6 L15 14 C15 19 12 21 9 21 C5 21 4 18 3 15 ' +
            'L1 10 C1 9 3 8 4 10 Z'},
-    pencil: {w: 20, h: 20, box: '0 0 20 20', stroke: 1.1,
+    pencil: {w: 20,
+        h: 20,
+        box: '0 0 20 20',
+        stroke: 1.1,
         d: 'M1 19 L2 14 L14 2 L18 6 L6 18 Z M12 4 L16 8'},
-    star: {w: 22, h: 22, box: '0 0 22 22', stroke: 1.1,
+    star: {w: 22,
+        h: 22,
+        box: '0 0 22 22',
+        stroke: 1.1,
         d: 'M11 1 L13.5 7.6 L20.5 7.9 L15 12.3 L16.9 19.1 L11 15.2 ' +
            'L5.1 19.1 L7 12.3 L1.5 7.9 L8.5 7.6 Z'},
-    rocket: {w: 22, h: 22, box: '0 0 22 22', stroke: 1.1,
+    rocket: {w: 22,
+        h: 22,
+        box: '0 0 22 22',
+        stroke: 1.1,
         d: 'M11 1 C14 4 15.5 8 15.5 12 L15.5 15 L12.5 13.5 L12.5 17 L11 20.5 ' +
            'L9.5 17 L9.5 13.5 L6.5 15 L6.5 12 C6.5 8 8 4 11 1 Z'},
-    heart: {w: 22, h: 22, box: '0 0 22 22', stroke: 1.1,
+    heart: {w: 22,
+        h: 22,
+        box: '0 0 22 22',
+        stroke: 1.1,
         d: 'M11 19.5 C4 14.5 1.5 11 1.5 7.5 C1.5 4.5 3.8 2.5 6.4 2.5 ' +
            'C8.3 2.5 9.9 3.5 11 5.2 C12.1 3.5 13.7 2.5 15.6 2.5 ' +
            'C18.2 2.5 20.5 4.5 20.5 7.5 C20.5 11 18 14.5 11 19.5 Z'},
-    sparkle: {w: 22, h: 22, box: '0 0 22 22', stroke: 1,
+    sparkle: {w: 22,
+        h: 22,
+        box: '0 0 22 22',
+        stroke: 1,
         d: 'M11 1 C12 6.5 15.5 10 21 11 C15.5 12 12 15.5 11 21 ' +
            'C10 15.5 6.5 12 1 11 C6.5 10 10 6.5 11 1 Z'},
-    cat: {w: 22, h: 22, box: '0 0 22 22', stroke: 1.1,
+    cat: {w: 22,
+        h: 22,
+        box: '0 0 22 22',
+        stroke: 1.1,
         d: 'M4 2 L7.5 6.5 L14.5 6.5 L18 2 L18 8 C20 10 20 14.5 16.5 17 ' +
            'C13.5 19.5 8.5 19.5 5.5 17 C2 14.5 2 10 4 8 Z'}
 };
@@ -159,8 +183,12 @@ class Overlay {
 
     addPeer (id, name, color, style) {
         this.peers.set(id, {
-            name, color, style: style || 'arrow',
-            status: 'here', sprite: null, cursor: null
+            name,
+            color,
+            style: style || 'arrow',
+            status: 'here',
+            sprite: null,
+            cursor: null
         });
         this._notify();
     }
@@ -175,8 +203,12 @@ class Overlay {
         list.forEach(p => {
             if (p.id !== selfId) {
                 this.peers.set(p.id, {
-                    name: p.name, color: p.color, style: p.cursor || 'arrow',
-                    status: 'here', sprite: null, cursor: null
+                    name: p.name,
+                    color: p.color,
+                    style: p.cursor || 'arrow',
+                    status: 'here',
+                    sprite: null,
+                    cursor: null
                 });
             }
         });
