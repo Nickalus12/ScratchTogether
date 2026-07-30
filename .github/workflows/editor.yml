@@ -1,0 +1,46 @@
+name: editor
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'scratch-gui/**'
+      - '.github/workflows/editor.yml'
+  pull_request:
+    paths:
+      - 'scratch-gui/**'
+      - '.github/workflows/editor.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    # The editor is a TurboWarp checkout, so a full install + webpack 4 build is
+    # slow, and the build succeeding is the real gate. Lint is advisory here:
+    # upstream's eslint config reports ~75 pre-existing JSDoc/operator errors on
+    # src/lib/collab, so a blocking lint step would fail every PR on day one.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.13'
+          cache: npm
+          cache-dependency-path: scratch-gui/package-lock.json
+
+      - run: npm ci
+        working-directory: scratch-gui
+        timeout-minutes: 20
+
+      - name: Lint the collab client (advisory)
+        run: npx eslint src/lib/collab --ext .js,.jsx
+        working-directory: scratch-gui
+        continue-on-error: true
+
+      - name: Build
+        run: npm run build
+        working-directory: scratch-gui
+        timeout-minutes: 30
+        env:
+          # webpack 4 against modern Node's OpenSSL, and the bundle needs headroom
+          NODE_OPTIONS: --openssl-legacy-provider --max-old-space-size=4096

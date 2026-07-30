@@ -1,0 +1,11 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Discord — help, showcase, find someone to build with
+    url: https://discord.gg/8rc63SwhvW
+    about: Fastest route for questions, and /bug files an issue here for you.
+  - name: Report a security problem privately
+    url: https://github.com/Nickalus12/SquiggleGames/blob/main/SECURITY.md
+    about: Account takeover, private work exposed, anything involving a child's safety.
+  - name: How to contribute
+    url: https://github.com/Nickalus12/SquiggleGames/blob/main/CONTRIBUTING.md
+    about: Setup, where things live, and what a good pull request looks like.

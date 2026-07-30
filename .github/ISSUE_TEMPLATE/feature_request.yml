@@ -1,0 +1,60 @@
+name: Idea or feature request
+description: A block, a feature, or something that would make Squiggle better
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Ideas from people who actually build things here are the best input this
+        project gets. Describe what you were trying to make — even if you don't
+        know what the fix should be.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What were you trying to do?
+      description: The thing you were building, and where you got stuck or annoyed.
+      placeholder: I wanted a tag game where whoever gets tagged becomes "it", but there's no way to make sure both players agree on who's it.
+    validations:
+      required: true
+
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would help?
+      description: A block, a button, a change to how something works. A rough idea is fine.
+    validations:
+      required: false
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: What part of Squiggle?
+      options:
+        - A new block (Together / multiplayer games)
+        - A new block (something else)
+        - The editor
+        - Multiplayer / rooms / sharing
+        - Publishing, Explore, Play
+        - Accounts and profiles
+        - Moderation and safety
+        - Docs
+        - Something else
+    validations:
+      required: false
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Did you find a workaround?
+      description: If you got it working some other way, saying how helps a lot.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: help
+    attributes:
+      label: Would you want to build it?
+      options:
+        - label: I'd like to try making this myself (someone will help you get set up)
+          required: false
