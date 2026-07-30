@@ -10,6 +10,9 @@ export default async ({ addon, console, msg }) => {
   let recordBuffer = [];
   let recorder;
   let timeout;
+  let audioContext = null;
+  let micStream = null;
+  let inputNodeDestination = null;
 
   const mimeType = [
     // Chrome and Firefox only support encoding as webm
@@ -213,6 +216,28 @@ export default async ({ addon, console, msg }) => {
         addon.tab.traps.vm.runtime.off("PROJECT_STOP_ALL", stopSignFunc);
         stopSignFunc = null;
       }
+      if (audioContext) {
+        if (audioContext.state !== "closed") {
+          audioContext.close().catch(() => {});
+        }
+        audioContext = null;
+      }
+      if (inputNodeDestination && addon.tab.traps.vm?.runtime?.audioEngine?.inputNode) {
+        try {
+          addon.tab.traps.vm.runtime.audioEngine.inputNode.disconnect(inputNodeDestination);
+        } catch (e) {
+          console.warn("Error disconnecting inputNode:", e);
+        }
+        inputNodeDestination = null;
+      }
+      if (micStream) {
+        try {
+          micStream.getTracks().forEach((track) => track.stop());
+        } catch (e) {
+          console.warn("Error stopping mic tracks:", e);
+        }
+        micStream = null;
+      }
     };
     const stopRecording = (force) => {
       if (isWaitingForFlag) {
@@ -244,7 +269,6 @@ export default async ({ addon, console, msg }) => {
       recordBuffer = [];
       isRecording = true;
       const vm = addon.tab.traps.vm;
-      let micStream;
       if (opts.micEnabled) {
         // Show permission dialog before green flag is clicked
         try {
@@ -279,25 +303,25 @@ export default async ({ addon, console, msg }) => {
       isWaitingForFlag = false;
       waitingForFlagFunc = abortController = null;
       const stream = new MediaStream();
-      const videoStream = vm.runtime.renderer.canvas.captureStream();
+      const videoStream = vm.runtime.renderer.canvas.captureStream(30); // 30 FPS target for smooth capture
       stream.addTrack(videoStream.getVideoTracks()[0]);
 
-      const ctx = new AudioContext();
-      const dest = ctx.createMediaStreamDestination();
+      audioContext = new AudioContext();
+      const dest = audioContext.createMediaStreamDestination();
       if (opts.audioEnabled) {
-        const mediaStreamDestination = vm.runtime.audioEngine.audioContext.createMediaStreamDestination();
-        vm.runtime.audioEngine.inputNode.connect(mediaStreamDestination);
-        const audioSource = ctx.createMediaStreamSource(mediaStreamDestination.stream);
+        inputNodeDestination = vm.runtime.audioEngine.audioContext.createMediaStreamDestination();
+        vm.runtime.audioEngine.inputNode.connect(inputNodeDestination);
+        const audioSource = audioContext.createMediaStreamSource(inputNodeDestination.stream);
         audioSource.connect(dest);
       }
-      if (opts.micEnabled) {
-        const micSource = ctx.createMediaStreamSource(micStream);
+      if (opts.micEnabled && micStream) {
+        const micSource = audioContext.createMediaStreamSource(micStream);
         micSource.connect(dest);
       }
       if (opts.audioEnabled || opts.micEnabled) {
         stream.addTrack(dest.stream.getAudioTracks()[0]);
       }
-      recorder = new MediaRecorder(stream, { mimeType });
+      recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 2500000 }); // High-quality 2.5 Mbps encoding
       recorder.ondataavailable = (e) => {
         recordBuffer.push(e.data);
       };
