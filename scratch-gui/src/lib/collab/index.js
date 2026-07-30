@@ -1805,5 +1805,11 @@ export default {
     resumeWorkspaceEvents,
     paintRev,
     setAppearance,
-    setRoomTitle
+    setRoomTitle,
+    // Which room this tab is in, for anything that needs to ask the server
+    // about it — the history panel is the first.
+    get roomName () {
+        return (overlay.self && overlay.self.room) ||
+            (client.session && client.session.room) || '';
+    }
 };
