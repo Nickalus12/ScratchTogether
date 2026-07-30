@@ -175,6 +175,43 @@ broadcast game message [bump] with [1]
    either side — both see the score climb. A third tab that joins mid-game
    already has the current `score` via the server cache.
 
+## Knowing whether anyone is out there
+
+Daily counters, no access log, no cookie, no third party, no script in the page.
+
+```bash
+cd collab-server && npm run stats        # last 30 days in the terminal
+cd collab-server && npm run stats 90     # or any window
+```
+
+`/admin` is the same data as a page (admin accounts only, or an email on
+`ADMIN_EMAILS` behind Cloudflare Access). `GET /api/admin/telemetry?days=30` is
+the JSON behind both.
+
+What is counted: page views by name, distinct visitors, signups, logins, room
+joins, saves, referrer host, country, device class, peak people online. What is
+never stored: addresses, user-agent strings, full referrer URLs — see
+`/privacy`, or the header comment in `collab-server/telemetry.js` for the
+mechanism.
+
+Distinct visitors are counted by hashing the address under a secret that
+rotates nightly and is destroyed, so the pseudonyms cannot be linked across
+days or reversed. Do Not Track and Global Privacy Control are honoured.
+
+| Variable | Default | What |
+|---|---|---|
+| `TELEMETRY` | on | `0` disables all counting |
+| `TELEMETRY_RETAIN_DAYS` | 400 | how long the anonymous daily counts keep |
+| `TELEMETRY_SEEN_RETAIN_DAYS` | 2 | how long the visitor pseudonyms keep |
+| `SITE_HOSTS` | `squigglegames.app,localhost` | hostnames that don't count as referrals |
+| `ADMIN_EMAILS` | *(empty)* | who may read `/admin` via the Access header |
+
+```bash
+cd collab-server
+node test-telemetry.js       # the privacy claims, asserted
+node test-telemetry-e2e.js   # ...against a real booted server
+```
+
 ## License
 
 The editor is derived from [TurboWarp](https://github.com/TurboWarp/scratch-gui)
