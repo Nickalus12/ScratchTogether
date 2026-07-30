@@ -1536,7 +1536,20 @@ const wireSocket = () => {
     client.on('room-renamed', msg => {
         applyRoomTitle(msg.title);
     });
+    client.on('error', msg => {
+        if (msg.error === 'session-replaced') {
+            client.disconnect();
+            overlay.toast('👀 Opened in another tab — disconnected here', '#ff8c00');
+        } else if (msg.error === 'room-full') {
+            client.disconnect();
+            overlay.toast('🚫 Room is full', '#e8386d');
+        } else if (msg.error === 'no-access') {
+            client.disconnect();
+            overlay.toast('🔒 Access denied', '#e8386d');
+        }
+    });
     client.on('kicked', msg => {
+        client.disconnect();
         overlay.toast(msg.reason === 'room-deleted' ?
             '🚪 This room was deleted' : '🔒 Your access to this room changed', '#e8386d');
     });
