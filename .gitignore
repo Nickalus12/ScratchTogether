@@ -4,13 +4,24 @@ scratch-gui/build/
 scratch-gui/dist/
 scratch-gui/translations/
 
-# server data — rooms, saved projects, users are runtime state, never source
-collab-server/rooms/
-collab-server/projects/
-collab-server/users.json
-# the stop token is minted fresh every boot
-collab-server/run/
-collab-server/tls/
+# The Squiggle server is a separate proprietary program with its own repository.
+# Everything below is ignored so a checkout sitting alongside the editor can
+# never be committed into this GPL-licensed tree by accident — the boundary is
+# the whole point, and one `git add -A` on a bad day is all it would take.
+collab-server/
+scripts/
+deploy.sh
+deploy.cmd
+Dockerfile
+docker-compose.yml
+.dockerignore
+start.cmd
+host-online.cmd
+package.json
+package-lock.json
+docs/ARCHITECTURE.md
+docs/DEPLOY.md
+docs/cloudflare.md
 
 # deployment target config (host names, users) stays local
 .deploy.env
@@ -18,12 +29,3 @@ collab-server/tls/
 # local scratch files
 *.log
 collab-integration.patch
-
-# sqlite metadata store — runtime state
-collab-server/*.db
-collab-server/*.db-wal
-collab-server/*.db-shm
-collab-server/squiggle.db*
-
-# the generated starter is committed on purpose — it ships with the server
-!collab-server/starter/welcome.sb3

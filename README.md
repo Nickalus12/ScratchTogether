@@ -1,13 +1,12 @@
-# Squiggle
+# Squiggle — editor
 
-Real-time multiplayer for block coding — open a room, share the link, and build
-the same project together while you watch each other's cursors move. Built on
-[TurboWarp](https://turbowarp.org), which is built on
-[Scratch](https://scratch.mit.edu).
+The Squiggle editor: a [TurboWarp](https://turbowarp.org) fork (itself built on
+[Scratch](https://scratch.mit.edu)) with the multiplayer client built in, so
+block edits, sprite drags, paint strokes and green-flag runs replay live on
+everyone else's screen.
 
 **[squigglegames.app](https://squigglegames.app)** · **[Discord](https://discord.gg/8rc63SwhvW)** · **[Contributing](./CONTRIBUTING.md)**
 
-[![server](https://github.com/Nickalus12/SquiggleGames/actions/workflows/server.yml/badge.svg)](https://github.com/Nickalus12/SquiggleGames/actions/workflows/server.yml)
 [![editor](https://github.com/Nickalus12/SquiggleGames/actions/workflows/editor.yml/badge.svg)](https://github.com/Nickalus12/SquiggleGames/actions/workflows/editor.yml)
 [![license: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue.svg)](./LICENSE)
 [![good first issues](https://img.shields.io/github/issues/Nickalus12/SquiggleGames/good%20first%20issue?label=good%20first%20issues&color=7057ff)](https://github.com/Nickalus12/SquiggleGames/labels/good%20first%20issue)
@@ -18,130 +17,68 @@ the same project together while you watch each other's cursors move. Built on
 
 ---
 
-## What it does
+## What is in this repository
 
-| | |
+This repository contains **the editor only** — the part that runs in your
+browser, licensed GPL-3.0 because it derives from TurboWarp.
+
+The Squiggle server the editor talks to over a WebSocket — rooms, accounts,
+permissions, moderation, publishing, the gallery — is a **separate proprietary
+program**. It is not in this repository, not distributed here, and not covered
+by this repository's license. See [License](#license).
+
+| Path | What |
 |---|---|
-| **Live co-editing** | Block edits, sprite drags, costume paint strokes and green-flag runs replay on everyone's screen as they happen — no reload, no save-and-refresh |
-| **Rooms** | Private, unlisted or public, with owner / editor / viewer roles and invite links. A room survives server restarts and rejoining |
-| **Accounts without email** | A handle and a passphrase. Kids don't have an email address, so recovery is a four-word code you write down at signup |
-| **Grown-up accounts** | A parent account sees its children's projects and approves anything that would go public |
-| **Publishing** | Share a finished project to `/explore`, play it at `/play`, favourite it. A child account can't publish on its own — it *asks*, and the request lands on the grown-up's dashboard |
-| **Version history** | Every room keeps 25 snapshots a minute apart, browsable and restorable from the history panel — "undo this whole afternoon" after someone paints over a sprite |
-| **Multiplayer games** | The **Together** extension turns a room into a game session — shared variables and game messages between running projects. See [docs/TOGETHER.md](./docs/TOGETHER.md) |
-| **Editor extras** | A Squiggle theme, typed comments with section frames and an outline, and the QoL addons wired in as native extensions |
-| **Moderation** | Word filtering, reports, an admin console at `/admin`, and a Discord bug pipeline that files GitHub issues |
-| **Discord linking** | `/link` in the Discord server hands you a code; confirming it while signed in grants the 🔗 Linked role |
-| **Counting, not tracking** | Daily counters only — no access log, no cookie, no third-party script. See [Privacy](#privacy) |
+| `scratch-gui/` | The editor — a clone of `TurboWarp/scratch-gui` with Squiggle's changes |
+| `scratch-gui/src/lib/collab/` | The multiplayer client: the half of the protocol that runs in the browser |
+| `docs/TOGETHER.md` | The **Together** extension — shared variables and messages between running projects |
+| `tools/` | Demo-video tooling |
+
+## Running the editor
+
+Needs **Node ≥ 22.13**.
+
+```bash
+git clone https://github.com/Nickalus12/SquiggleGames.git
+cd SquiggleGames/scratch-gui
+npm install
+NODE_OPTIONS=--openssl-legacy-provider npm start     # dev server on :8601
+```
+
+That gives you a working editor with hot reload, which is what you want for any
+change to the editor itself. Point it at a server with `?server=ws://host:4455`
+if you have one to point at.
+
+```bash
+NODE_OPTIONS=--openssl-legacy-provider npm run build  # production bundle
+```
 
 ## Contributing
 
-Squiggle is built in the open and outside help is genuinely wanted — a bug
-report from someone who hit the bug is worth more than a week of guessing.
+Outside help is genuinely wanted — a bug report from someone who hit the bug is
+worth more than a week of guessing.
 
 - **Something broken?** `/bug` in [Discord](https://discord.gg/8rc63SwhvW) (it
   files the issue for you), or open one [here](https://github.com/Nickalus12/SquiggleGames/issues/new/choose).
 - **Idea for a block, a feature, a game?** Open a feature issue, or say it in
   `#feature-ideas`.
-- **Want to write code?** Read [CONTRIBUTING.md](./CONTRIBUTING.md) — it covers
-  setup, how the pieces fit, what a good PR looks like, and which areas are open.
+- **Want to write code?** Read [CONTRIBUTING.md](./CONTRIBUTING.md).
 
 Everyone taking part is held to the [Code of Conduct](./CODE_OF_CONDUCT.md).
 Children use this project; that shapes what we ship and how we talk to each
 other.
 
-## Run it locally
-
-Needs **Node ≥ 22.13** for the built-in `node:sqlite` — but use **Node 24**:
-Explore's `popular` sort needs SQLite math functions that Node 22's build
-doesn't have ([#8](https://github.com/Nickalus12/SquiggleGames/issues/8)).
-
-```bash
-git clone https://github.com/Nickalus12/SquiggleGames.git
-cd SquiggleGames
-
-# 1. the multiplayer server + static host (port 4455)
-cd collab-server && npm install && node server.js
-
-# 2. only if you're changing the editor — dev server on :8601 with hot reload
-cd scratch-gui && npm install
-NODE_OPTIONS=--openssl-legacy-provider npm start
-```
-
-On Windows, `start.cmd` does both by double-click.
-
-To run the way production does — one process serving everything on `:4455`:
-
-```bash
-cd scratch-gui && NODE_OPTIONS=--openssl-legacy-provider npm run build
-cd .. && npm start
-```
-
-Then open `http://localhost:4455`, sign up, and make a room. To try multiplayer
-alone, open the room in a second browser profile.
-
-Useful env vars: `PORT`, `HOST`, `ROOMS_DIR`, `BUILD_DIR`, `TELEMETRY`.
-URL params: `?name=Emma&room=family&server=ws://192.168.x.x:4455`.
-
-### Tests
-
-```bash
-npm test              # auth, hardening, moderation, publishing, telemetry, deploy/drain
-npm run test:browser  # live sync, driven through a real editor (needs a build + a running server)
-```
-
-They boot real servers on real ports and assert behaviour, not implementation —
-they are the gate for a server change. Browser-level checks live in `scripts/`
-(`node scripts/test-collab-edit.mjs` and friends).
-
-## Layout
-
-| Path | What |
-|---|---|
-| `collab-server/` | Node WebSocket relay + static host + REST API + SQLite metadata store. Zero dependencies beyond `ws` |
-| `collab-server/rooms/` | Room snapshots as plain `.sb3` files — copyable, not locked in a database |
-| `scratch-gui/` | TurboWarp editor (clone of `TurboWarp/scratch-gui`); the collab client lives in `src/lib/collab/` |
-| `scripts/` | Browser-driven integration checks |
-| `docs/` | [Architecture](./docs/ARCHITECTURE.md) · [Deploying](./docs/DEPLOY.md) · [Together extension](./docs/TOGETHER.md) · [Cloudflare](./docs/cloudflare.md) |
-
-## Hosting it yourself
-
-Easiest public link: double-click `host-online.cmd` — server plus a Cloudflare
-quick tunnel (`winget install Cloudflare.cloudflared` once). Share the printed
-`https://xxxx.trycloudflare.com/` URL; editor and websocket ride the same origin.
-
-Permanent:
-
-```bash
-docker compose up -d   # builds the editor, serves :4455, rooms in a volume
-```
-
-Deploying to a real box — including what happens to people who are mid-project
-when you push — is [docs/DEPLOY.md](./docs/DEPLOY.md). The short version: work
-is drained to disk before the process exits, clients reconnect in about a second
-and get a *"A new version of Squiggle is ready — Reload"* banner instead of
-losing what's on screen.
-
 ## Privacy
 
-Daily counters, no access log, no cookie, no third party, no script in the page.
-Counted: page views by name, distinct visitors, signups, logins, room joins,
-saves, referrer host, country, device class, peak people online. Never stored:
-addresses, user-agent strings, full referrer URLs.
+The hosted service keeps daily counters only — no access log, no cookie, no
+third-party script in the page. Counted: page views by name, distinct visitors,
+signups, logins, room joins, saves, referrer host, country, device class, peak
+people online. Never stored: addresses, user-agent strings, full referrer URLs.
 
 Distinct visitors are counted by hashing the address under a secret that rotates
 nightly and is destroyed, so the pseudonyms cannot be linked across days or
-reversed. Do Not Track and Global Privacy Control are honoured; `TELEMETRY=0`
-turns the whole thing off.
-
-```bash
-cd collab-server && npm run stats     # last 30 days; `npm run stats 90` for a wider window
-node test-telemetry.js                # the privacy claims, asserted
-```
-
-`/admin` is the same data as a page (admin accounts, or an email on
-`ADMIN_EMAILS` behind Cloudflare Access). The user-facing version is `/privacy`;
-the mechanism is documented in the header of `collab-server/telemetry.js`.
+reversed. Do Not Track and Global Privacy Control are honoured. The user-facing
+version is at [squigglegames.app/privacy](https://squigglegames.app/privacy).
 
 ## Security
 
@@ -151,10 +88,16 @@ has the private route.
 
 ## License
 
-GPL-3.0. The editor derives from [TurboWarp](https://github.com/TurboWarp/scratch-gui)
-(GPL-3.0), which builds on Scratch by the Scratch Foundation; the collab server
-and tooling ship under the same license as part of the same distribution. See
-[LICENSE](./LICENSE).
+**GPL-3.0**, for the contents of this repository. The editor derives from
+[TurboWarp/scratch-gui](https://github.com/TurboWarp/scratch-gui) (GPL-3.0),
+which builds on Scratch by the Scratch Foundation. See [LICENSE](./LICENSE).
+
+The Squiggle server is a **separate and independent program**. It is not part of
+this repository, is not distributed with it, and is not licensed under the GPL.
+The editor communicates with it at arm's length over a WebSocket and HTTP
+interface, exchanging data rather than linking code. Running this editor against
+the hosted service, or against any other server, does not place that server
+under this license.
 
 ## Notes
 
@@ -162,6 +105,4 @@ and tooling ship under the same license as part of the same distribution. See
 - Every browser runs the project independently — motion is computed locally on
   each side, and only the values you explicitly send are shared. This is
   deliberate: it keeps scripts from fighting each other.
-- The version the app reports at `/api/version` comes from
-  **`collab-server/package.json`** — the root `package.json` is a launcher, not
-  the version of record. Changes are in [CHANGELOG.md](./CHANGELOG.md).
+- Release notes are in [CHANGELOG.md](./CHANGELOG.md).

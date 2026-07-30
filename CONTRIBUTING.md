@@ -20,43 +20,39 @@ walk you through it.
 | **Fix a bug** | Issues labelled [`good first issue`](https://github.com/Nickalus12/SquiggleGames/labels/good%20first%20issue) are scoped to be self-contained |
 | **Build a feature** | Comment on the issue first (or open one) so two people don't build the same thing |
 
+## What is in this repository
+
+This repository is **the editor** — the TurboWarp-derived app that runs in the
+browser, including the multiplayer client under `src/lib/collab/`.
+
+The Squiggle server it connects to is a separate proprietary program in its own
+repository, so server-side changes aren't something a PR here can make. That is
+not a hint that help isn't wanted: the editor is where nearly everything a
+person actually sees lives, and it is all here.
+
 ## Setting up
 
-You need **Node 24**. The declared floor is 22.13 (that's where `node:sqlite`
-becomes usable), but one query needs SQLite math functions that Node 22's build
-lacks — see [#8](https://github.com/Nickalus12/SquiggleGames/issues/8), which is
-open and takers are welcome. No database to install, no services to configure.
+You need **Node ≥ 22.13**. Nothing to install beyond npm packages.
 
 ```bash
 git clone https://github.com/Nickalus12/SquiggleGames.git
-cd SquiggleGames
-
-cd collab-server && npm install && node server.js     # → http://localhost:4455
-```
-
-That is enough for any **server** change. Open the site, sign up (handle +
-passphrase, no email), make a room.
-
-For an **editor** change you also want the dev server, which hot-reloads:
-
-```bash
-cd scratch-gui && npm install
+cd SquiggleGames/scratch-gui
+npm install
 NODE_OPTIONS=--openssl-legacy-provider npm start      # → http://localhost:8601
 ```
 
 Webpack 4 needs that `--openssl-legacy-provider` flag on modern Node; leave it
 off and you get an opaque OpenSSL error.
 
-To test multiplayer by yourself, open the same room in a second browser profile
-or a private window — two tabs in the same profile share a session.
-
-Windows: `start.cmd` starts both by double-click.
+That is a full editor with hot reload. It runs single-player out of the box,
+which is enough for most changes. To work on anything that syncs, point it at a
+server with `?server=ws://host:4455` and open the same room in a second browser
+profile or a private window — two tabs in the same profile share a session.
 
 ## Finding your way around
 
-Read [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) before your first code
-change — it's short, and it explains the two rules that are not obvious from
-reading the source:
+Two rules are not obvious from reading the source, and breaking either produces
+a bug that looks like something else entirely:
 
 - Applying a remote change must not emit a local event that gets sent back out
   (echo loops look like lag and end in divergence).
@@ -70,24 +66,10 @@ Short version of where things live:
 | Cursors, presence widget, toasts, banners | `scratch-gui/src/lib/collab/overlay.js` |
 | Reconnect behaviour | `scratch-gui/src/lib/collab/client.js` |
 | The Together extension's blocks | search `scratch-gui` for the Together extension; see [docs/TOGETHER.md](./docs/TOGETHER.md) |
-| Rooms, presence, drain, the socket protocol | `collab-server/server.js` |
-| Accounts, projects, publishing, explore, admin | `collab-server/http-api.js` |
-| Schema and queries | `collab-server/db.js` |
-| Moderation | `collab-server/moderation.js`, `moderation-words.js` |
-| Counting and the privacy model | `collab-server/telemetry.js` |
 
 ## Before you open a PR
 
-```bash
-npm test          # from the repo root — delegates to collab-server
-```
-
-Seven suites, each booting a real server on a real port. They must be green.
-They assert *claims* — "the in-progress work reached disk", "a wrong token is
-refused" — rather than implementation, so when you change behaviour the test
-that fails should be describing the behaviour you changed.
-
-Editor changes — the build succeeding is the gate:
+The build succeeding is the gate:
 
 ```bash
 cd scratch-gui && NODE_OPTIONS=--openssl-legacy-provider npm run build
@@ -99,42 +81,23 @@ about 75 pre-existing JSDoc and operator-precedence errors on
 `src/lib/collab`. Don't fix them in your PR — just don't add new ones on the
 lines you touched.
 
-If your change touches sync, run the browser check that covers it. These drive a
-real editor with Playwright against a running server:
+If your change touches sync, say in the PR how you checked it and what you saw.
+Two things about that are worth knowing before you spend an evening confused:
 
-```bash
-# once
-npm install && npx playwright install chromium
+**Give each identity its own account.** The server drops the older socket when
+the same account joins twice — that is what stops one person appearing twice
+after a refresh — so a second tab signed into the same account silently evicts
+the first from the room. That tab stays up, stops receiving, and the failure
+reads exactly like a sync bug. Use a second browser profile.
 
-# with the server running on :4455 and a built editor
-npm run test:browser
-```
+**Check that your check can fail.** A sync test that replays a snapshot proves
+nothing if the room has not moved on since that snapshot was taken: both
+editors recognise it as the one they already have, skip the reload, and the
+check passes without ever running the path it is named after. Advance the room
+first, then verify.
 
-Five checks: block create/move relaying, paint surviving a stale snapshot,
-simultaneous co-painting, sprite add/delete/rename, and Together messages +
-shared variables. They sign up over the API and hand the session cookie to the
-browser, so there is nothing to set up by hand. A preflight runs first and tells
-you which of the three prerequisites is missing rather than failing as a module
-error or a timeout. `ST_BASE` points them somewhere other than
-`http://127.0.0.1:4455`; individual files still run on their own with
-`node scripts/<name>.mjs`.
-
-**If you add one, give each identity its own account.** The server drops the
-older socket when the same account joins twice — right, it is what stops one
-person appearing twice after a refresh — so a second socket opened inside a tab
-silently evicts that tab from the room. The tab stays up, stops receiving, and
-the failure reads exactly like a sync bug. `puppet()` in `scripts/_session.mjs`
-exists for third parties and logs in separately for this reason.
-
-**And check that your check can fail.** `test-paint-sync` replays an old zip to
-prove paint survives a stale snapshot — but if the room has not moved on since
-that zip was captured, both editors recognise it as the one they already have
-and skip the reload, and the test passes without ever running the path it is
-named after. It advances the room first, deliberately.
-
-**Add a test when you fix a bug.** The test should fail on the old code. That is
-the whole review standard for a fix — if the bug could come back silently, it
-will.
+**When you fix a bug, describe the reproduction that used to fail.** That is the
+whole review standard for a fix — if the bug could come back silently, it will.
 
 ## What a good pull request looks like
 
@@ -162,10 +125,9 @@ know how to do, say so; it's normal for a reviewer to push a commit onto your
 branch to help it land.
 
 A PR can be turned down for reasons that have nothing to do with quality: it
-adds a dependency to a server that deliberately has one, it collects data the
-privacy model doesn't allow, or it makes the editor harder to explain to a
-ten-year-old. If that risk is high, ask in an issue first and save yourself the
-work.
+collects data the privacy model doesn't allow, it needs a server change that
+isn't happening, or it makes the editor harder to explain to a ten-year-old. If
+that risk is high, ask in an issue first and save yourself the work.
 
 ## Things this project holds to
 
@@ -174,15 +136,12 @@ These are not negotiable in a PR, so they're worth knowing up front:
 1. **Children use this.** Anything user-visible gets read by someone who is ten.
    Anything that collects data gets weighed against them being here.
 2. **Counting, not tracking.** No access log, no cookie, no third-party script,
-   no fingerprinting surface. `test-telemetry.js` asserts this and will fail you.
+   no fingerprinting surface. A change that adds one won't land.
 3. **Nobody loses work.** Restarts drain, disconnects rescue, conflicts copy the
    losing side into the user's library. A change that can silently discard what's
    on someone's screen won't land.
-4. **The server stays dependency-light.** `ws` and the Node standard library.
-   Adding a dependency needs a reason that survives "why can't the platform do
-   this".
-5. **Projects stay portable.** Room and project blobs are plain `.sb3` files you
-   can copy out. Nothing gets locked into the database.
+4. **Projects stay portable.** Project blobs are plain `.sb3` files you can copy
+   out. Nothing gets locked into a format only Squiggle can open.
 
 ## Security
 
