@@ -1,4 +1,4 @@
-/* ScratchTogether sync engine.
+/* Squiggle sync engine.
  *
  * Replication model:
  *  - Block edits: Blockly events relayed live, routed by sprite NAME (names are
@@ -29,7 +29,7 @@ const readPref = (key, fallback) => {
         const raw = localStorage.getItem(key);
         return raw === null ? fallback : raw === '1';
     } catch (e) {
-        return fallback;   // private browsing, or storage disabled
+        return fallback; // private browsing, or storage disabled
     }
 };
 
@@ -44,7 +44,17 @@ const state = {
     workspace: null,
     ScratchBlocks: null,
     active: false,
-    applyingRemote: false,
+    /*
+     * Depth, not a flag. Every reader treats it as a boolean (0 is falsy), but
+     * the applies nest: applySnapshot holds it across `await vm.loadProject`,
+     * and a vm-action or sprite-info arriving in that window used to run its
+     * own apply and set the flag back to FALSE on the way out — leaving the
+     * rest of the load unsuppressed, so the loading project's own Blockly
+     * events were read as local edits and broadcast back to the room. That is
+     * the echo loop, and it happened exactly when a room was busiest. Counting
+     * means the outermost apply is the one that clears it.
+     */
+    applyingRemote: 0,
     snapshotTimer: null,
     snapshotInFlight: false, // serialize zip+send so rapid edits don't stack zips
     lastCursorSent: 0,
@@ -134,8 +144,8 @@ const sendPresence = fields => {
     if (!state.active) return;
     const now = Date.now();
     const next = {
-        status: fields.status !== undefined ? fields.status : state.lastPresence.status,
-        sprite: fields.sprite !== undefined ? fields.sprite : state.lastPresence.sprite
+        status: fields.status === undefined ? state.lastPresence.status : fields.status,
+        sprite: fields.sprite === undefined ? state.lastPresence.sprite : fields.sprite
     };
     const changed = next.status !== state.lastPresence.status || next.sprite !== state.lastPresence.sprite;
     if (!changed && now - state.lastPresence.sentAt < 3000) return;
@@ -484,7 +494,7 @@ const applySnapshot = async msg => {
     }
 
     const keepTarget = editingTargetName();
-    state.applyingRemote = true;
+    state.applyingRemote++;
     state.snapshotLoading = true;
     if (msg.reset) state.recentPaint.clear(); // deliberate project open — don't resurrect old paint
     // SVG diff bases die with the old assets (the editor reloads from the new
@@ -495,8 +505,18 @@ const applySnapshot = async msg => {
     try {
         await state.vm.loadProject(bufferFromB64(msg.b64));
         // Only mark applied after a successful load — failed loads must retry.
+        // Assigned after an await, but not a race: `snapshotLoading` above is
+        // set before the await and gates every other entry to this function, so
+        // nothing else can be inside the load.
+        // eslint-disable-next-line require-atomic-updates -- guarded by snapshotLoading
         state.lastSnapshotB64 = msg.b64;
-        if (typeof msg.version === 'number') state.roomVersion = msg.version;
+        // The version, though, has other writers — `snapshot-ack` can land
+        // while we load, and it is newer than the snapshot we started with.
+        // Never move backwards, or the next send is `basedOn` a stale version
+        // and the server gate rejects it.
+        if (typeof msg.version === 'number' && msg.version > state.roomVersion) {
+            state.roomVersion = msg.version;
+        }
         rebuildTargetIndex();
         // The zip we just loaded can be up to ~20s behind live-synced paint —
         // re-apply the freshest costume state so strokes never get reverted.
@@ -514,8 +534,11 @@ const applySnapshot = async msg => {
         // eslint-disable-next-line no-console
         console.error('[collab] failed to apply snapshot', e);
     } finally {
+        // Same gate: this function is the only writer of snapshotLoading, and
+        // it cannot be re-entered while the flag is up.
+        // eslint-disable-next-line require-atomic-updates -- guarded by snapshotLoading
         state.snapshotLoading = false;
-        state.applyingRemote = false;
+        state.applyingRemote--;
     }
 
     // Block edits that raced the load were queued — replay on the state we just
@@ -646,7 +669,7 @@ const wrapVm = vm => {
                             type: 'vm-action',
                             action: 'costumeAdd',
                             target: targetName,
-                            version: fixedVersion !== undefined ? fixedVersion : optVersion,
+                            version: fixedVersion === undefined ? optVersion : fixedVersion,
                             costume: {
                                 name: costumeObject.name,
                                 dataFormat: costumeObject.dataFormat || asset.dataFormat,
@@ -1173,7 +1196,7 @@ const applyBlockEvent = msg => {
     const vmEvent = jsonToVmEvent(msg.event);
     if (!vmEvent) return;
 
-    state.applyingRemote = true;
+    state.applyingRemote++;
     try {
         // var_* / comment events consult runtime.getEditingTarget() — impersonate
         // the sender's editing target for the duration of the apply.
@@ -1210,7 +1233,7 @@ const applyBlockEvent = msg => {
         // eslint-disable-next-line no-console
         console.error('[collab] failed to apply block event', e, msg);
     } finally {
-        state.applyingRemote = false;
+        state.applyingRemote--;
     }
 };
 
@@ -1219,7 +1242,7 @@ const applySpriteInfo = msg => {
     const target = findTargetByName(msg.target);
     if (!target) return;
     const d = msg.data || {};
-    state.applyingRemote = true;
+    state.applyingRemote++;
     try {
         if (typeof d.x === 'number' || typeof d.y === 'number') {
             target.setXY(typeof d.x === 'number' ? d.x : target.x, typeof d.y === 'number' ? d.y : target.y);
@@ -1230,7 +1253,7 @@ const applySpriteInfo = msg => {
         if (typeof d.rotationStyle === 'string') target.setRotationStyle(d.rotationStyle);
         if (typeof d.name === 'string') state.vm.renameSprite(target.id, d.name);
     } catch (e) { /* target mid-removal */ }
-    state.applyingRemote = false;
+    state.applyingRemote--;
 };
 
 // Install a relayed .sprite3 without yanking the local user off their sprite
@@ -1284,7 +1307,7 @@ const applySoundAdd = msg => {
 };
 
 const applyVmAction = msg => {
-    state.applyingRemote = true;
+    state.applyingRemote++;
     try {
         if (msg.action === 'greenFlag') {
             state.vm.greenFlag();
@@ -1345,8 +1368,8 @@ const applyVmAction = msg => {
             // mid-stroke (pointer down), so a reload never eats a drag.
             if (state.pointerDown && state.localTab === 1 && msg.target === editingTargetName()) {
                 state.pendingRemotePaint.set(`${msg.target}|${msg.costumeIndex}|${msg.action}`, msg);
-                state.applyingRemote = false;
-                return;
+                return; // the finally below is what balances the ++
+
             }
             if (msg.action === 'updateSvg') {
                 applyRemoteSvg(msg);
@@ -1358,7 +1381,7 @@ const applyVmAction = msg => {
         // eslint-disable-next-line no-console
         console.error('[collab] vm-action failed', e, msg.action);
     } finally {
-        state.applyingRemote = false;
+        state.applyingRemote--;
     }
 };
 

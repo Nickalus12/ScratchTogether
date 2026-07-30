@@ -252,7 +252,7 @@ export const compositePatch = (basePixels, baseWidth, patchPixels, maskAlpha, px
     const patch32 = new Uint32Array(patchPixels.buffer, patchPixels.byteOffset, patchPixels.length / 4);
     for (let y = 0; y < ph; y++) {
         const srcRow = y * pw;
-        const dstRow = (py + y) * baseWidth + px;
+        const dstRow = ((py + y) * baseWidth) + px;
         for (let x = 0; x < pw; x++) {
             if (maskAlpha[srcRow + x] > 127) base32[dstRow + x] = patch32[srcRow + x];
         }

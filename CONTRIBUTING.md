@@ -110,11 +110,23 @@ npm install && npx playwright install chromium
 npm run test:browser
 ```
 
-That's block create/move relaying, costume strokes, sprite add/drag/rename, and
-Together messages + shared variables. A preflight runs first and tells you which
-of the three prerequisites is missing rather than failing as a module error or a
-timeout. `ST_BASE` points them somewhere other than `http://127.0.0.1:4455`;
-individual files still run on their own with `node scripts/<name>.mjs`.
+That's block create/move relaying, simultaneous co-painting, sprite
+add/delete/rename, and Together messages + shared variables. They sign up over
+the API and hand the session cookie to the browser, so they need nothing set up
+by hand. A preflight runs first and tells you which of the three prerequisites is
+missing rather than failing as a module error or a timeout. `ST_BASE` points them
+somewhere other than `http://127.0.0.1:4455`; individual files still run on their
+own with `node scripts/<name>.mjs`.
+
+One more exists and is **not** in that chain:
+
+```bash
+npm run test:browser:paint    # currently fails — see #10
+```
+
+It reproduces a real bug (a stale snapshot reverting a partner's paint), so it
+stays out of the chain you run to check your own work — a red that isn't yours
+teaches you to ignore red. Put it back in `test:browser` in the PR that fixes it.
 
 **Add a test when you fix a bug.** The test should fail on the old code. That is
 the whole review standard for a fix — if the bug could come back silently, it

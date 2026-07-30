@@ -437,7 +437,8 @@ class Overlay {
     }
 
     _esc (s) {
-        return String(s == null ? '' : s).replace(/[<>&"]/g, c => ({'<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;'}[c]));
+        const entities = {'<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;'};
+        return String(s === null || s === undefined ? '' : s).replace(/[<>&"]/g, c => entities[c]);
     }
 }
 
