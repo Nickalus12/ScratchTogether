@@ -25,6 +25,7 @@ import {
     openExtensionLibrary
 } from '../reducers/modals';
 import {setProjectTitle} from '../reducers/project-title';
+import {setInterpolationState} from '../reducers/tw';
 
 import FontLoaderHOC from '../lib/font-loader-hoc.jsx';
 import LocalizationHOC from '../lib/localization-hoc.jsx';
@@ -61,7 +62,13 @@ class GUI extends React.Component {
         this.props.onStorageInit(storage);
         this.props.onVmInit(this.props.vm);
         setProjectIdMetadata(this.props.projectId);
-        collab.init(this.props.vm, {setProjectTitle: this.props.onSetProjectTitle});
+        collab.init(this.props.vm, {
+            setProjectTitle: this.props.onSetProjectTitle,
+            // Keeps the Settings checkbox honest about interpolation: collab
+            // re-asserts the setting after every project load, and the UI has
+            // to be told, or it shows OFF while motion is plainly smoothed.
+            setInterpolation: this.props.onSetInterpolation
+        });
     }
     componentDidUpdate (prevProps) {
         // A room and its project share one name. Renaming in the title box
@@ -141,6 +148,7 @@ GUI.propTypes = {
     projectHost: PropTypes.string,
     projectId: PropTypes.oneOfType([PropTypes.string, PropTypes.number]),
     projectTitle: PropTypes.string,
+    onSetInterpolation: PropTypes.func,
     onSetProjectTitle: PropTypes.func,
     telemetryModalVisible: PropTypes.bool,
     vm: PropTypes.instanceOf(VM).isRequired
@@ -201,7 +209,8 @@ const mapDispatchToProps = dispatch => ({
     onRequestCloseBackdropLibrary: () => dispatch(closeBackdropLibrary()),
     onRequestCloseCostumeLibrary: () => dispatch(closeCostumeLibrary()),
     onRequestCloseTelemetryModal: () => dispatch(closeTelemetryModal()),
-    onSetProjectTitle: title => dispatch(setProjectTitle(title))
+    onSetProjectTitle: title => dispatch(setProjectTitle(title)),
+    onSetInterpolation: on => dispatch(setInterpolationState(on))
 });
 
 const ConnectedGUI = injectIntl(connect(

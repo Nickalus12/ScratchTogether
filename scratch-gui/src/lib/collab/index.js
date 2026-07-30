@@ -17,6 +17,28 @@ import showLogin from './login';
 import overlay from './overlay';
 import paintMerge from './paint-merge';
 
+/*
+ * Small preferences that belong to the person rather than the project, kept
+ * where they will survive a reload. TurboWarp persists its own settings in the
+ * URL, which does not survive following a room link.
+ */
+const INTERPOLATION_KEY = 'squiggle:interpolation';
+
+const readPref = (key, fallback) => {
+    try {
+        const raw = localStorage.getItem(key);
+        return raw === null ? fallback : raw === '1';
+    } catch (e) {
+        return fallback;   // private browsing, or storage disabled
+    }
+};
+
+const savePref = (key, value) => {
+    try {
+        localStorage.setItem(key, value ? '1' : '0');
+    } catch (e) { /* not worth breaking anything over */ }
+};
+
 const state = {
     vm: null,
     workspace: null,
@@ -60,10 +82,14 @@ const state = {
     canEdit: true,
     // Last title we pushed into the GUI. Renames echoed back from the server
     // must not bounce out again as a fresh rename.
-    appliedTitle: null
+    appliedTitle: null,
+    // Smooth motion is the default, but it is the person's call — some
+    // projects (pen art, 3D, anything that teleports sprites) look worse for
+    // it, and a laggy one gets slower without looking smoother.
+    wantInterpolation: readPref(INTERPOLATION_KEY, true)
 };
 
-// Set by gui.jsx so collab can drive the project title box.
+// Set by gui.jsx so collab can drive the project title box and the settings UI.
 let hooks = {};
 
 const trimPaintBase = () => {
@@ -914,15 +940,43 @@ const wrapVm = vm => {
         if (state.active && !state.applyingRemote) sendPresence({status: 'here'});
     });
 
-    // Frame interpolation: render at the display's refresh rate while game
-    // logic keeps its designed tick (30fps for most Scratch games) — smooth
-    // motion without changing gameplay speed. Loading a project can reset
-    // runtime options, so re-assert on every load.
+    /*
+     * Frame interpolation: render at the display's refresh rate while game
+     * logic keeps its designed tick (30fps for most Scratch projects) — smooth
+     * motion without changing gameplay speed. On by default here because most
+     * projects look better for it.
+     *
+     * Loading a project resets runtime options, so it has to be re-asserted
+     * after every load — but re-asserting `true` meant the Settings checkbox
+     * could not turn it off: the next sync silently switched it back on, and
+     * in a live room that is every few seconds. Re-assert the WANTED value
+     * instead, and treat any call to setInterpolation as the new want.
+     */
+    const applyInterpolation = on => {
+        try {
+            vm.setInterpolation(on);
+        } catch (e) { /* older vm */ }
+        // The checkbox lives in redux and is set separately from the runtime,
+        // so it has to be told or it will disagree with what the eye sees.
+        if (hooks.setInterpolation) hooks.setInterpolation(on);
+    };
+
+    if (typeof vm.setInterpolation === 'function' && !vm.setInterpolation.__squiggle) {
+        const original = vm.setInterpolation.bind(vm);
+        const wrapped = on => {
+            state.wantInterpolation = !!on;
+            savePref(INTERPOLATION_KEY, !!on);
+            return original(on);
+        };
+        wrapped.__squiggle = true;
+        vm.setInterpolation = wrapped;
+    }
+
+    applyInterpolation(state.wantInterpolation);
+
     vm.runtime.on('PROJECT_LOADED', () => {
         rebuildTargetIndex();
-        try {
-            vm.setInterpolation(true);
-        } catch (e) { /* older vm */ }
+        applyInterpolation(state.wantInterpolation);
     });
 };
 
