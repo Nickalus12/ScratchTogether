@@ -8,6 +8,9 @@ scratch-gui/translations/
 collab-server/rooms/
 collab-server/projects/
 collab-server/users.json
+# the stop token is minted fresh every boot
+collab-server/run/
+collab-server/tls/
 
 # deployment target config (host names, users) stays local
 .deploy.env

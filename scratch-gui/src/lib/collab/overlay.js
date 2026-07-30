@@ -370,6 +370,42 @@ class Overlay {
         return el;
     }
 
+    /*
+     * A banner, unlike a toast, does not go away. It is for conditions the user
+     * has to act on or wait out — an update waiting to be picked up, a restart
+     * in progress — where a message that faded after three seconds would just
+     * mean nobody ever saw it. Pass null to clear.
+     */
+    banner (text, opts = {}) {
+        if (this._banner) {
+            this._banner.remove();
+            this._banner = null;
+        }
+        if (!text) return;
+        const bar = document.createElement('div');
+        bar.style.cssText = [
+            'position:fixed', 'top:0', 'left:0', 'right:0', 'z-index:99999',
+            'display:flex', 'align-items:center', 'justify-content:center', 'gap:12px',
+            `background:${opts.kind === 'busy' ? '#2f7fe0' : '#6f4bd8'}`,
+            'color:#fff', 'padding:8px 16px',
+            'font:600 13px ui-rounded,"Segoe UI",Helvetica,Arial,sans-serif',
+            'box-shadow:0 2px 12px rgba(0,0,0,.35)'
+        ].join(';');
+        bar.appendChild(document.createTextNode(text));
+        if (opts.actionLabel && opts.onAction) {
+            const btn = document.createElement('button');
+            btn.textContent = opts.actionLabel;
+            btn.style.cssText = [
+                'background:#fff', 'color:#241a4a', 'border:0', 'border-radius:8px',
+                'padding:4px 12px', 'font:700 12px inherit', 'cursor:pointer'
+            ].join(';');
+            btn.addEventListener('click', opts.onAction);
+            bar.appendChild(btn);
+        }
+        document.body.appendChild(bar);
+        this._banner = bar;
+    }
+
     // ---- toasts ----
 
     // The colour identifies who the message is about, so it stays — as a dot

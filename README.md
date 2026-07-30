@@ -15,6 +15,46 @@ find someone to build with, or report something broken.
 > Not affiliated with or endorsed by the Scratch Team. "Scratch" is their
 > trademark and is used here only to describe what this interoperates with.
 
+## Updating a live server
+
+Pushing an update while people are building is a normal thing to do, not an
+outage. What happens, in order:
+
+1. `deploy.sh` stamps the build with the git sha, then swaps it in atomically —
+   keeping the **previous** build directory. Asset filenames are content-hashed
+   per build, so a browser that loaded the editor before the deploy will ask for
+   chunk names the new build doesn't have; the server falls back to the old
+   directory instead of returning 404 into a running session.
+2. `systemctl restart` sends SIGTERM. The server does not just exit: it tells
+   every live room a restart is coming, asks one editor per room for a final
+   snapshot, and **waits for it** (up to `DRAIN_MS`, default 6s). Everything on
+   screen reaches disk before the process goes.
+3. Sockets close with 1012 Service Restart, so clients reconnect in about a
+   second rather than treating it as a crash and backing off.
+4. On reconnect the editor compares the build it loaded against with the one the
+   server now reports. If they differ it shows a **"A new version of Squiggle is
+   ready — Reload"** banner and otherwise carries on. Nothing is taken away
+   mid-sentence; the tab keeps working on the old code until the user is ready.
+   A tab that stays open without reconnecting notices within five minutes by
+   polling `/api/version`.
+
+**If someone is mid-project:** their work is saved in step 2, restored from the
+room snapshot when they reconnect a second later, and they see a banner offering
+a reload. If their connection drops during the window they keep editing offline;
+when they come back, whichever side is newer wins — and if theirs is the side
+that loses, it is copied into their library as `Rescued — <project> — <time>`
+before the room's state is applied.
+
+**Stopping it by hand.** `npm run stop` asks for the same graceful shutdown a
+deploy gets, using a token the server writes to `run/stop.token` at boot. Ctrl+C
+works too. Reach for these rather than killing the process: on Windows a kill is
+the *only* thing a plain `taskkill` can do, and it takes whatever was on screen
+with it.
+
+Versions live in `package.json`; see [CHANGELOG.md](./CHANGELOG.md). Releasing:
+bump the version, write the changelog entry, commit, tag `v1.1.0`, then
+`./deploy.sh --build`.
+
 ## Layout
 
 | Path | What |

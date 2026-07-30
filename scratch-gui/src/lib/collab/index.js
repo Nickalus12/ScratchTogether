@@ -389,8 +389,47 @@ const reapplyRecentPaint = () => {
     }
 };
 
+/*
+ * Park the local project in the user's own library before something replaces
+ * it. The room is a single shared document, so when two people's states
+ * diverge one of them has to lose — but losing should mean "it's in your
+ * library", not "it's gone". Rate-limited because the losing side of a stale
+ * snapshot can happen repeatedly during a bad connection, and 40 near-identical
+ * rescues is its own kind of data loss.
+ */
+const RESCUE_COOLDOWN_MS = 5 * 60 * 1000;
+const rescueLocalProject = async why => {
+    if (!state.vm || !state.canEdit) return false;
+    if (Date.now() - (state.lastRescueAt || 0) < RESCUE_COOLDOWN_MS) return false;
+    state.lastRescueAt = Date.now();
+    try {
+        const b64 = await state.vm.saveProjectSb3('base64');
+        const when = new Date().toLocaleString();
+        client.send({
+            type: 'save-project',
+            name: `Rescued — ${state.appliedTitle || 'project'} — ${when}`,
+            b64,
+            quiet: true
+        });
+        overlay.toast(`💾 Your unsaved changes were saved to your library (${why})`, '#f0912b');
+        return true;
+    } catch (e) {
+        // eslint-disable-next-line no-console
+        console.error('[collab] rescue save failed', e);
+        return false;
+    }
+};
+
 const applySnapshot = async msg => {
     if (!state.vm || !msg || !msg.b64) return;
+    // This snapshot is about to overwrite edits of ours that never reached the
+    // room. Keep a copy first — silently discarding someone's work is the one
+    // outcome this whole sync engine must never produce.
+    if (msg.stale || state.rescueOnNextSnapshot) {
+        const why = msg.stale ? 'someone else saved first' : 'someone else was already in the room';
+        state.rescueOnNextSnapshot = false;
+        await rescueLocalProject(why);
+    }
     // Reconnect with edits made while offline and nobody else in the room:
     // our local copy is the newest truth — the welcome handler already pushed
     // it, so drop the stale room snapshot instead of reverting the user's work.
@@ -920,11 +959,21 @@ const onWorkspaceEvent = e => {
             state.blockMoveTimer = setTimeout(flushBlockMoves, 32);
         }
         sendPresence({status: '✏️ coding', sprite: target});
+        // Moving a block is an edit like any other — it has to reach disk. The
+        // cacheOnly path is idle-timed and rate-limited, so a long drag still
+        // costs one save, not one per frame.
+        scheduleSnapshot(true);
         return;
     }
     if (state.pendingBlockMoves.size) flushBlockMoves();
     client.send({type: 'block-event', target, event: json});
     sendPresence({status: '✏️ coding', sprite: target});
+    // Block edits reach peers live but used to reach DISK only if some other
+    // kind of edit happened to schedule a snapshot. An afternoon of pure block
+    // work therefore persisted nothing: close every tab, or restart the
+    // server, and it was gone. cacheOnly keeps it cheap — the save is idle-timed
+    // and relay-free, because everyone already has these edits.
+    scheduleSnapshot(true);
 };
 
 const onWorkspaceMouseMove = evt => {
@@ -973,8 +1022,29 @@ const flushPendingPaint = () => {
     for (let i = 0; i < queued.length; i++) applyVmAction(queued[i]);
 };
 
+// A tab left open for a day would otherwise only learn about a deploy by
+// reconnecting. Cheap enough at this interval to just ask.
+const VERSION_POLL_MS = 5 * 60 * 1000;
+const pollVersion = () => {
+    if (!state.buildId || Date.now() - (state.lastVersionPoll || 0) < VERSION_POLL_MS) return;
+    state.lastVersionPoll = Date.now();
+    fetch('/api/version', {cache: 'no-store'})
+        .then(r => r.json())
+        .then(v => {
+            if (v && v.buildId && v.buildId !== state.buildId) {
+                overlay.banner('A new version of Squiggle is ready.', {
+                    kind: 'update',
+                    actionLabel: 'Reload',
+                    onAction: () => window.location.reload()
+                });
+            }
+        })
+        .catch(() => { /* offline — the reconnect path will catch it */ });
+};
+
 const housekeep = () => {
     if (!state.active) return;
+    pollVersion();
 
     const tab = currentTabIndex();
     if (tab !== state.localTab) {
@@ -1494,6 +1564,25 @@ const wireSocket = () => {
         overlay.setPeers(msg.peers, msg.id);
         overlay.setProjects(msg.projects);
         applyRoomTitle(msg.title || msg.room);
+        /*
+         * First welcome records the build this tab is running against; every
+         * later one compares. Reconnecting into a server that has been deployed
+         * since is exactly when a tab starts running stale code, and it is the
+         * one moment we can reliably notice.
+         */
+        if (msg.buildId) {
+            if (!state.buildId) {
+                state.buildId = msg.buildId;
+            } else if (msg.buildId === state.buildId) {
+                overlay.banner(null); // reconnected to the same build — all clear
+            } else {
+                overlay.banner('A new version of Squiggle is ready.', {
+                    kind: 'update',
+                    actionLabel: 'Reload',
+                    onAction: () => window.location.reload()
+                });
+            }
+        }
         overlay.toast(
             isReconnect ? '🔌 Reconnected!' : `Welcome, ${overlay.self.name}! Room: ${msg.title || msg.room}`,
             msg.color
@@ -1511,6 +1600,11 @@ const wireSocket = () => {
             state.skipNextSnapshot = true;
             state.forceNextSnapshot = true; // deliberate override of the version gate
             sendSnapshotNow();
+        } else if (isReconnect && state.offlineEdits) {
+            // Others were in the room while we were away, so their state wins
+            // and the snapshot on its way will replace what we did offline.
+            // It gets copied into our library first rather than dropped.
+            state.rescueOnNextSnapshot = true;
         }
         state.offlineEdits = false;
         state.lastPresence = {status: null, sprite: null, sentAt: 0};
@@ -1524,6 +1618,17 @@ const wireSocket = () => {
         overlay.setConnected(false);
         // Keep housekeeping running — reconnect is expected; stop only on solo exit.
         netEmit('disconnected', {});
+    });
+    /*
+     * A deploy landed while this tab was open. The page keeps working against
+     * the old code — nothing is taken away mid-sentence — but the banner stays
+     * up until it is reloaded, because an old editor talking to a new server is
+     * where unreproducible bugs come from.
+     */
+    client.on('server-restarting', () => {
+        overlay.banner('Squiggle is updating — saving your work…', {kind: 'busy'});
+        // Don't wait for the debounce; the server is holding the door for this.
+        sendSnapshotNow();
     });
     client.on('peer-updated', msg => {
         overlay.updatePeerAppearance(msg.id, {color: msg.color, style: msg.cursor});
