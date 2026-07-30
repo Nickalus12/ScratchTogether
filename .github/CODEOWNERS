@@ -1,0 +1,10 @@
+# Every pull request gets a review request automatically. Not a gate — nobody's
+# blocked waiting on it — just so nothing sits unnoticed.
+*                       @Nickalus12
+
+# The parts where a mistake reaches a child or loses someone's work.
+/collab-server/moderation*.js   @Nickalus12
+/collab-server/telemetry.js     @Nickalus12
+/collab-server/auth.js          @Nickalus12
+/SECURITY.md                    @Nickalus12
+/CODE_OF_CONDUCT.md             @Nickalus12
