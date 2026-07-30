@@ -1,0 +1,108 @@
+<meta charset="utf-8">
+<title>Squiggle — title cards</title>
+<style>
+  html,body{margin:0;height:100%;background:#0D1020;overflow:hidden}
+  body{width:1280px;height:720px;
+    font:600 16px/1.4 ui-rounded,Nunito,"Segoe UI",system-ui,-apple-system,sans-serif;
+    color:#f2f4fb;-webkit-font-smoothing:antialiased}
+  /* Two washes of brand light so the flat navy doesn't read as dead space. */
+  #glow{position:absolute;inset:0;
+    background:
+      radial-gradient(60% 55% at 32% 34%,rgba(124,92,255,.30),transparent 70%),
+      radial-gradient(52% 52% at 70% 70%,rgba(34,211,238,.18),transparent 70%)}
+  #stage{position:absolute;inset:0;display:flex;flex-direction:column;
+    align-items:center;justify-content:center}
+  /* Halo sits behind the tile and picks up its own gradient. */
+  #halo{position:absolute;width:520px;height:520px;border-radius:50%;
+    background:radial-gradient(circle,rgba(124,92,255,.42),rgba(34,211,238,.14) 45%,transparent 68%);
+    opacity:0}
+  #mark{position:relative;display:block;
+    filter:drop-shadow(0 26px 48px rgba(10,6,30,.62))}
+  #word{font-size:74px;letter-spacing:-1.6px;font-weight:800;
+    background:linear-gradient(100deg,#c4b5fd,#67e8f9);
+    -webkit-background-clip:text;background-clip:text;color:transparent}
+  #line{font-size:30px;font-weight:600;color:#c9d0e6;letter-spacing:.1px}
+  #sub2{font-size:21px;font-weight:600;color:#7d87ad;letter-spacing:2.6px;text-transform:lowercase}
+  #url{font-size:41px;font-weight:800;letter-spacing:-.3px;
+    background:linear-gradient(100deg,#c4b5fd,#67e8f9);
+    -webkit-background-clip:text;background-clip:text;color:transparent}
+  #sub{font-size:20px;font-weight:600;color:#6d769a}
+  #fade{position:absolute;inset:0;background:#0D1020;pointer-events:none;opacity:0}
+  .el{opacity:0}
+  .sp{height:0}
+</style>
+
+<div id="glow"></div>
+<div id="stage">
+  <div id="halo"></div>
+  <img id="mark" class="el" src="../../scratch-gui/static/images/squiggle-1024.png" alt="">
+  <div class="sp" id="sp1"></div>
+  <div id="word" class="el">Squiggle</div>
+  <div id="line" class="el">Build games together, live.</div>
+  <div id="sub2" class="el">one project &nbsp;·&nbsp; two cursors</div>
+  <div id="url" class="el">squigglegames.app</div>
+  <div id="sub" class="el">free &amp; open source</div>
+</div>
+<div id="fade"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+
+const clamp01 = v => v < 0 ? 0 : v > 1 ? 1 : v;
+// Progress of t through [a,b]. Every visual below is a function of this.
+const seg = (t, a, b) => clamp01((t - a) / (b - a));
+const outCubic = p => 1 - Math.pow(1 - p, 3);
+const outBack = p => 1 + 2.4 * Math.pow(p - 1, 3) + 1.4 * Math.pow(p - 1, 2);
+
+/* Deterministic: the frame is a pure function of t, so the renderer can
+ * screenshot any timeline position without waiting on wall-clock animation. */
+function show(el, p, {rise = 0, scale = 0, rot = 0} = {}) {
+    const e = outCubic(p);
+    el.style.opacity = e;
+    const b = scale || rot ? outBack(p) : e;
+    const parts = [`translateY(${rise * (1 - e)}px)`];
+    if (scale) parts.push(`scale(${1 - scale * (1 - b)})`);
+    if (rot) parts.push(`rotate(${rot * (1 - b)}deg)`);
+    el.style.transform = parts.join(' ');
+}
+
+function frame(scene, t) {
+    const isIntro = scene === 'intro';
+    const px = n => n + 'px';
+
+    $('mark').style.width = $('mark').style.height = isIntro ? px(232) : px(178);
+    $('sp1').style.height = isIntro ? px(34) : px(26);
+    $('word').style.fontSize = isIntro ? px(74) : px(62);
+    $('line').style.display = $('sub2').style.display = isIntro ? '' : 'none';
+    $('url').style.display = $('sub').style.display = isIntro ? 'none' : '';
+    $('halo').style.width = $('halo').style.height = isIntro ? px(560) : px(460);
+    $('halo').style.marginBottom = isIntro ? px(150) : px(190);
+
+    if (isIntro) {
+        // 0.0-0.9 tile lands · 0.5-1.3 wordmark · 1.0-1.8 tagline · 1.5-2.2 sub · 2.6-3.1 fade out
+        show($('mark'), seg(t, 0, 0.85), {scale: 0.34, rot: -7});
+        $('halo').style.opacity = outCubic(seg(t, 0.1, 1.0));
+        show($('word'), seg(t, 0.5, 1.3), {rise: 26});
+        show($('line'), seg(t, 1.0, 1.8), {rise: 18});
+        show($('sub2'), seg(t, 1.5, 2.2), {rise: 14});
+        $('fade').style.opacity = seg(t, 2.6, 3.1);
+    } else {
+        // 0.0-0.8 tile · 0.35-1.1 wordmark · 0.8-1.5 url · 1.3-2.0 sub · fade IN from footage
+        show($('mark'), seg(t, 0.05, 0.8), {scale: 0.3, rot: 5});
+        $('halo').style.opacity = outCubic(seg(t, 0.1, 0.9)) * 0.9;
+        show($('word'), seg(t, 0.35, 1.1), {rise: 22});
+        show($('url'), seg(t, 0.8, 1.5), {rise: 20});
+        show($('sub'), seg(t, 1.3, 2.0), {rise: 14});
+        $('fade').style.opacity = 1 - clamp01(t / 0.35);
+    }
+}
+
+const q = new URLSearchParams(location.search);
+window.frame = frame;
+// The renderer waits on this: screenshotting before the tile decodes yields a blank mark.
+window.ready = new Promise(res => {
+    const img = $('mark');
+    if (img.complete) res(true); else img.onload = () => res(true);
+});
+frame(q.get('scene') || 'intro', parseFloat(q.get('t') || '0'));
+</script>

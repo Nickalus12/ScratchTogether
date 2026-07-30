@@ -55,6 +55,13 @@ import returnIcon from './custom/return.svg';
 import galleryIcon from './gallery/gallery.svg';
 import togetherIconURL from './together/together.svg';
 import togetherInsetIconURL from './together/together-small.svg';
+
+import cooldownsIconURL from './cooldowns/icon.svg';
+import healthbarsIconURL from './healthbars/icon.svg';
+import textengineIconURL from './textengine/icon.svg';
+import vfxIconURL from './vfx/icon.svg';
+import particlesIconURL from './particles/icon.svg';
+
 import {APP_NAME} from '../../brand';
 
 export default [
@@ -77,6 +84,111 @@ export default [
             />
         ),
         tags: ['scratch', 'tw'],
+        featured: true
+    },
+    {
+        name: (
+            <FormattedMessage
+                defaultMessage="Cooldowns"
+                description="Name for the Cooldowns extension"
+                id="gui.extension.cooldowns.name"
+            />
+        ),
+        extensionId: 'thunderboltcooldowns',
+        iconURL: cooldownsIconURL,
+        insetIconURL: cooldownsIconURL,
+        description: (
+            <FormattedMessage
+                defaultMessage="Manage timers and cooldowns easily."
+                description="Description for the Cooldowns extension"
+                id="gui.extension.cooldowns.description"
+            />
+        ),
+        tags: ['tw'],
+        featured: true
+    },
+    {
+        name: (
+            <FormattedMessage
+                defaultMessage="Health Bars"
+                description="Name for the Health Bars extension"
+                id="gui.extension.healthbars.name"
+            />
+        ),
+        extensionId: 'thunderbolthealthbars',
+        iconURL: healthbarsIconURL,
+        insetIconURL: healthbarsIconURL,
+        description: (
+            <FormattedMessage
+                defaultMessage="Add stylish health bars and damage numbers."
+                description="Description for the Health Bars extension"
+                id="gui.extension.healthbars.description"
+            />
+        ),
+        tags: ['tw'],
+        featured: true
+    },
+    {
+        name: (
+            <FormattedMessage
+                defaultMessage="Text Engine"
+                description="Name for the Text Engine extension"
+                id="gui.extension.textengine.name"
+            />
+        ),
+        extensionId: 'thunderbolttext',
+        iconURL: textengineIconURL,
+        insetIconURL: textengineIconURL,
+        description: (
+            <FormattedMessage
+                defaultMessage="Render animated, stylish text on screen."
+                description="Description for the Text Engine extension"
+                id="gui.extension.textengine.description"
+            />
+        ),
+        tags: ['tw'],
+        featured: true
+    },
+    {
+        name: (
+            <FormattedMessage
+                defaultMessage="VFX"
+                description="Name for the VFX extension"
+                id="gui.extension.vfx.name"
+            />
+        ),
+        extensionId: 'thunderboltvfx',
+        iconURL: vfxIconURL,
+        insetIconURL: vfxIconURL,
+        description: (
+            <FormattedMessage
+                defaultMessage="Add screen shake, impacts, and camera effects."
+                description="Description for the VFX extension"
+                id="gui.extension.vfx.description"
+            />
+        ),
+        tags: ['tw'],
+        featured: true
+    },
+    {
+        name: (
+            <FormattedMessage
+                defaultMessage="Particles"
+                description="Name for the Particles extension"
+                id="gui.extension.particles.name"
+            />
+        ),
+        extensionId: 'thunderboltparticlesystem',
+        iconURL: particlesIconURL,
+        insetIconURL: particlesIconURL,
+        description: (
+            <FormattedMessage
+                defaultMessage="Create trails and particle explosions."
+                description="Description for the Particles extension"
+                id="gui.extension.particles.description"
+            />
+        ),
+        tags: ['tw'],
         featured: true
     },
     {
