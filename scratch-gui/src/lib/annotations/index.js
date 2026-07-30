@@ -14,18 +14,28 @@
 // `id` is the wire format — it is written into project files. Renaming one
 // orphans every comment that already used it.
 //
-// Every `color` carries white header text, so each one is held at >= 4.5:1
-// against white; several are a shade darker than the brand palette for that
-// reason. tests/annotations.test.js keeps them honest.
+// Two constraints, both enforced by test/unit/util/annotations.test.js:
+//
+//   1. Every `color` carries white header text, so each is held at >= 4.5:1
+//      against white — several are a shade darker than the brand palette.
+//   2. No two colours may look alike. The first version of this palette put
+//      to-do and idea 2.8 CIELAB units apart, which is under the threshold at
+//      which a person can see any difference at all; careful and bug were a
+//      similar pair of reds. The types are now spread around the wheel, and
+//      the test measures that rather than merely checking the hex strings
+//      differ — which is what let identical-looking colours ship.
+//
+// Icons carry meaning where colour can't: to-do and done are the same
+// checkbox, empty and ticked, so the pair reads as one idea in two states.
 const TYPES = [
-    {id: 'note', label: 'Note', icon: '✎', color: '#7859f7', tint: '#f1eeff'},
-    {id: 'step', label: 'Step', icon: '➊', color: '#0c8196', tint: '#e8fbff'},
-    {id: 'todo', label: 'To-do', icon: '☐', color: '#a76809', tint: '#fff7e6'},
-    {id: 'done', label: 'Done', icon: '✓', color: '#0d875f', tint: '#e8fbf3'},
-    {id: 'warn', label: 'Careful', icon: '⚠', color: '#e11d48', tint: '#ffeef1'},
-    {id: 'bug', label: 'Bug', icon: '⨯', color: '#b91c1c', tint: '#ffeded'},
-    {id: 'idea', label: 'Idea', icon: '★', color: '#a16207', tint: '#fdf8e3'},
-    {id: 'section', label: 'Section', icon: '▤', color: '#9b4ee3', tint: 'none'}
+    {id: 'note', label: 'Note', icon: '✎', color: '#7c3aed', tint: '#f1ebff'},
+    {id: 'step', label: 'Step', icon: '➊', color: '#0e7490', tint: '#e3f6fb'},
+    {id: 'todo', label: 'To-do', icon: '☐', color: '#2563eb', tint: '#e8efff'},
+    {id: 'done', label: 'Done', icon: '☑', color: '#16803c', tint: '#e5f7ec'},
+    {id: 'warn', label: 'Careful', icon: '⚠', color: '#a16207', tint: '#fdf5e0'},
+    {id: 'bug', label: 'Bug', icon: '⊗', color: '#dc2626', tint: '#ffe9e9'},
+    {id: 'idea', label: 'Idea', icon: '★', color: '#db2777', tint: '#ffe9f3'},
+    {id: 'section', label: 'Section', icon: '▤', color: '#4b5563', tint: 'none'}
 ];
 
 const BY_ID = new Map(TYPES.map(t => [t.id, t]));

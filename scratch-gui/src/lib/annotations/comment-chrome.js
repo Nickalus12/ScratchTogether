@@ -19,11 +19,21 @@ const injectStyles = () => {
     const style = document.createElement('style');
     style.id = 'sq-annotation-styles';
     style.textContent = `
+/* The header sits on top of the comment's own drag bar, which is the only
+   handle a section comment has. Rather than intercept presses and try to hand
+   them back to Blockly — which cannot work, because a comment drag is armed by
+   the workspace handler further along the same event — the header is simply
+   transparent to the pointer. Presses land on the bar underneath and drag
+   natively. The type button opts back in; the title opts in only while it is
+   being edited (see focusTitle). */
 .${HEADER_CLASS} { display:flex; align-items:center; gap:6px; height:100%;
+    pointer-events:none;
     font:600 12px ui-rounded,"Segoe UI",Helvetica,Arial,sans-serif; }
 .${HEADER_CLASS} .sq-type { flex:0 0 auto; width:20px; height:20px; padding:0; border:0;
+    pointer-events:auto;
     display:flex; align-items:center; justify-content:center; cursor:pointer;
     border-radius:6px; font-size:12px; line-height:1; color:#fff; background:#7c5cff; }
+.${HEADER_CLASS} .sq-title.sq-editing { pointer-events:auto; }
 .${HEADER_CLASS} .sq-type:hover { filter:brightness(1.12); }
 .${HEADER_CLASS} .sq-title { flex:1 1 auto; min-width:0; border:0; outline:0; padding:0;
     background:transparent; font:inherit; color:#1f2340; text-overflow:ellipsis; }
@@ -64,7 +74,20 @@ document.addEventListener('mousedown', e => {
  * during a drag Blockly's gesture binds its own document-capture mouseup and
  * stops propagation, so a header-level listener never hears it. These are
  * registered at module load — before any gesture's — so they always run first. */
-let activePress = null; // {x, y, title, onTitle}
+/* Editing needs the pointer for the caret and selection, so the title takes it
+ * back for as long as it is focused and gives it up on blur — otherwise the
+ * top bar would stop being a drag handle the moment anyone typed a title. */
+const focusTitle = title => {
+    title.classList.add('sq-editing');
+    setTimeout(() => title.focus(), 0);
+};
+const releaseTitle = title => title.classList.remove('sq-editing');
+
+let activePress = null; // {x, y, title}
+const inRect = (el, x, y) => {
+    const r = el.getBoundingClientRect();
+    return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+};
 const settlePress = e => {
     if (!activePress) return;
     const p = (e.changedTouches && e.changedTouches[0]) || e;
@@ -72,9 +95,11 @@ const settlePress = e => {
     activePress = null;
     const dx = p.clientX - press.x;
     const dy = p.clientY - press.y;
-    if ((dx * dx) + (dy * dy) < 25 && press.onTitle) {
-        // Blockly's own click handling may still move focus; take it after.
-        setTimeout(() => press.title.focus(), 0);
+    // A press that moved was a drag. A clean release over the title means the
+    // user wanted to type a heading — the title ignores the pointer until then,
+    // so the hit test is geometric rather than a DOM target check.
+    if ((dx * dx) + (dy * dy) < 25 && inRect(press.title, p.clientX, p.clientY)) {
+        focusTitle(press.title);
     }
 };
 for (const ev of ['mouseup', 'pointerup', 'touchend']) {
@@ -140,52 +165,31 @@ const buildHeader = comment => {
     body.appendChild(wrap);
     fo.appendChild(body);
 
-    // The top bar doubles as the comment's ONLY drag handle, so the header
-    // must not swallow presses — for sections (click-through interior) that
-    // would leave nothing draggable at all. Instead: let the press start a
-    // Blockly drag, and only treat it as "edit the title" when the pointer
-    // comes back up without having moved. While the title is focused, presses
-    // stay local so clicking moves the caret rather than the comment.
-    const pt = e => (e.touches && e.touches[0]) || e;
-    // Blockly refuses to start a gesture when the event target is a text input
-    // (Blockly.utils.isTargetInput), so propagation alone can never drag from
-    // the title. Re-aim the press at the comment's own drag bar: block the
-    // input's native focus-on-press and hand Blockly a synthetic mousedown at
-    // the same spot. A clean click (no movement) still becomes "edit the
-    // title" via settlePress.
-    //
-    // Only mousedown/touchstart are intercepted — cancelling POINTERDOWN would
-    // suppress the whole compatibility mouse stream (no mousemove/mouseup ever
-    // fires) and freeze the drag it just started.
-    const onDown = e => {
-        if (document.activeElement === title) {
-            e.stopPropagation(); // already editing — caret moves, not drags
-            return;
-        }
-        activePress = {x: pt(e).clientX, y: pt(e).clientY, title, onTitle: e.target === title};
-        if ((e.target === title || e.target === wrap) && comment.svgHandleTarget_) {
-            e.preventDefault();
-            e.stopPropagation();
-            comment.svgHandleTarget_.dispatchEvent(new MouseEvent('mousedown', {
-                bubbles: true, cancelable: true, button: 0,
-                clientX: pt(e).clientX, clientY: pt(e).clientY
-            }));
-        }
+    /* Presses are not intercepted at all — the header is pointer-transparent,
+     * so a press on the bar reaches Blockly's own handle and drags the comment
+     * exactly as it does on an un-annotated one. All that is recorded here is
+     * where the press began, so a release that never moved can be treated as
+     * "edit the title". The listener is on the document because the press
+     * never lands on the header in the first place. */
+    const notePress = e => {
+        if (!comment.sqHeader_ || comment.isMinimized()) return;
+        const p = (e.touches && e.touches[0]) || e;
+        if (!inRect(wrap, p.clientX, p.clientY)) return;
+        activePress = {x: p.clientX, y: p.clientY, title};
     };
-    const onPointerDown = e => {
-        if (document.activeElement === title) {
-            e.stopPropagation();
-            return;
-        }
-        activePress = {x: e.clientX, y: e.clientY, title, onTitle: e.target === title};
-    };
-    wrap.addEventListener('mousedown', onDown, true);
-    wrap.addEventListener('touchstart', onDown, true);
-    wrap.addEventListener('pointerdown', onPointerDown, true);
+    comment.sqPress_ = notePress;
+    for (const ev of ['mousedown', 'touchstart']) {
+        document.addEventListener(ev, notePress, true);
+    }
 
     typeBtn.addEventListener('click', e => {
         e.stopPropagation();
         openTypeMenu(comment, typeBtn);
+    });
+    // The button takes the pointer, so a press on it would otherwise be read
+    // as a press on the title strip when it comes back up.
+    typeBtn.addEventListener('mousedown', () => {
+        activePress = null;
     });
 
     const pushTitle = () => {
@@ -195,6 +199,7 @@ const buildHeader = comment => {
     };
     title.addEventListener('input', pushTitle);
     title.addEventListener('change', pushTitle);
+    title.addEventListener('blur', () => releaseTitle(title));
     title.addEventListener('keydown', e => {
         if (e.key === 'Enter') title.blur();
         e.stopPropagation();
@@ -319,6 +324,12 @@ const patchComments = SB => {
     };
 
     proto.dispose = function () {
+        if (this.sqPress_) {
+            for (const ev of ['mousedown', 'touchstart']) {
+                document.removeEventListener(ev, this.sqPress_, true);
+            }
+            this.sqPress_ = null;
+        }
         if (this.sqHeader_) {
             this.sqHeader_.fo.remove();
             this.sqHeader_ = null;
