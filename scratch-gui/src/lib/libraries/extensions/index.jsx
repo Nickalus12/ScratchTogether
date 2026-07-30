@@ -69,7 +69,7 @@ export default [
         name: (
             <FormattedMessage
                 defaultMessage="Together"
-                description="Name for the ScratchTogether multiplayer game extension"
+                description="Name for the Squiggle multiplayer game extension"
                 id="gui.extension.together.name"
             />
         ),

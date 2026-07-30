@@ -86,7 +86,8 @@ URL params: `?name=Emma&room=family&server=ws://192.168.x.x:4455`.
 ### Tests
 
 ```bash
-cd collab-server && npm test    # auth, hardening, moderation, publishing, telemetry, deploy/drain
+npm test              # auth, hardening, moderation, publishing, telemetry, deploy/drain
+npm run test:browser  # live sync, driven through a real editor (needs a build + a running server)
 ```
 
 They boot real servers on real ports and assert behaviour, not implementation —

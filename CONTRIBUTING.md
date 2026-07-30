@@ -79,7 +79,7 @@ Short version of where things live:
 ## Before you open a PR
 
 ```bash
-cd collab-server && npm test
+npm test          # from the repo root — delegates to collab-server
 ```
 
 Seven suites, each booting a real server on a real port. They must be green.
@@ -104,16 +104,17 @@ real editor with Playwright against a running server:
 
 ```bash
 # once
-npm install -D playwright && npx playwright install chromium
+npm install && npx playwright install chromium
 
 # with the server running on :4455 and a built editor
-node scripts/test-collab-edit.mjs      # block create/move relays
-node scripts/test-paint-sync.mjs       # costume strokes
-node scripts/test-sprite-sync.mjs      # sprite add/drag/rename
-node scripts/test-together-game.mjs    # Together messages + shared variables
+npm run test:browser
 ```
 
-`ST_BASE` points them somewhere other than `http://127.0.0.1:4455`.
+That's block create/move relaying, costume strokes, sprite add/drag/rename, and
+Together messages + shared variables. A preflight runs first and tells you which
+of the three prerequisites is missing rather than failing as a module error or a
+timeout. `ST_BASE` points them somewhere other than `http://127.0.0.1:4455`;
+individual files still run on their own with `node scripts/<name>.mjs`.
 
 **Add a test when you fix a bug.** The test should fail on the old code. That is
 the whole review standard for a fix — if the bug could come back silently, it

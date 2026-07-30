@@ -1,4 +1,4 @@
-/* Together — multiplayer game blocks for ScratchTogether rooms.
+/* Together — multiplayer game blocks for Squiggle rooms.
  * Runs as a builtin (main thread) so it can reach window.SquiggleNet.
  * Talks only to that bridge; never opens its own socket. */
 

@@ -1,4 +1,4 @@
-/* WebSocket client for ScratchTogether: auto-reconnect, typed message handlers,
+/* WebSocket client for Squiggle: auto-reconnect, typed message handlers,
  * brief outbound queue so a blip doesn't drop block edits mid-drag. */
 
 // Lossy traffic — safe to drop under backpressure or while offline.
