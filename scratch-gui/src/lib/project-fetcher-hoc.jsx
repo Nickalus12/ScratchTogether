@@ -115,7 +115,12 @@ const ProjectFetcherHOC = function (WrappedComponent) {
                 if (
                     !projectUrl.startsWith('http:') &&
                     !projectUrl.startsWith('https:') &&
-                    !projectUrl.startsWith('data:')
+                    !projectUrl.startsWith('data:') &&
+                    // A leading slash means "on this server" — the upstream
+                    // rule turned /api/projects/x/sb3 into https:///api/... and
+                    // broke it, so our own play links had to carry an absolute
+                    // URL and stopped working the moment the host changed.
+                    !projectUrl.startsWith('/')
                 ) {
                     projectUrl = `https://${projectUrl}`;
                 }
