@@ -22,9 +22,10 @@ walk you through it.
 
 ## Setting up
 
-You need **Node ≥ 22.13** — the server uses the built-in `node:sqlite`. Node 24
-is what it's developed against. No database to install, no services to
-configure.
+You need **Node 24**. The declared floor is 22.13 (that's where `node:sqlite`
+becomes usable), but one query needs SQLite math functions that Node 22's build
+lacks — see [#8](https://github.com/Nickalus12/SquiggleGames/issues/8), which is
+open and takers are welcome. No database to install, no services to configure.
 
 ```bash
 git clone https://github.com/Nickalus12/SquiggleGames.git

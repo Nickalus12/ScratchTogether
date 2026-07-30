@@ -7,6 +7,11 @@ the same project together while you watch each other's cursors move. Built on
 
 **[squigglegames.app](https://squigglegames.app)** · **[Discord](https://discord.gg/8rc63SwhvW)** · **[Contributing](./CONTRIBUTING.md)**
 
+[![server](https://github.com/Nickalus12/SquiggleGames/actions/workflows/server.yml/badge.svg)](https://github.com/Nickalus12/SquiggleGames/actions/workflows/server.yml)
+[![editor](https://github.com/Nickalus12/SquiggleGames/actions/workflows/editor.yml/badge.svg)](https://github.com/Nickalus12/SquiggleGames/actions/workflows/editor.yml)
+[![license: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue.svg)](./LICENSE)
+[![good first issues](https://img.shields.io/github/issues/Nickalus12/SquiggleGames/good%20first%20issue?label=good%20first%20issues&color=7057ff)](https://github.com/Nickalus12/SquiggleGames/labels/good%20first%20issue)
+
 > Not affiliated with or endorsed by the Scratch Team or TurboWarp. "Scratch" is
 > a trademark of the Scratch Foundation and is used here only to describe what
 > this interoperates with.
@@ -47,8 +52,9 @@ other.
 
 ## Run it locally
 
-Needs **Node ≥ 22.13** (the server uses the built-in `node:sqlite`; Node 24 is
-what it's developed against).
+Needs **Node ≥ 22.13** for the built-in `node:sqlite` — but use **Node 24**:
+Explore's `popular` sort needs SQLite math functions that Node 22's build
+doesn't have ([#8](https://github.com/Nickalus12/SquiggleGames/issues/8)).
 
 ```bash
 git clone https://github.com/Nickalus12/SquiggleGames.git
