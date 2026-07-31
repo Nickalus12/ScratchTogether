@@ -37,6 +37,15 @@ jobs:
         working-directory: scratch-gui
         continue-on-error: true
 
+      # This one is a real gate, unlike the lint above. It needs no browser and
+      # no VM — it drives the extension against a stubbed runtime and bridge —
+      # and it covers the failures that manual play-testing does not reach:
+      # two messages in a single frame, a second project load, a loop fast
+      # enough to flood the socket.
+      - name: Together extension
+        run: node src/lib/libraries/extensions/together/together.test.mjs
+        working-directory: scratch-gui
+
       - name: Build
         run: npm run build
         working-directory: scratch-gui
