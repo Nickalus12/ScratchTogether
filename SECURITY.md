@@ -45,12 +45,12 @@ would rather not be.
   [TurboWarp](https://github.com/TurboWarp) or the Scratch Team, though we'd
   still like to know if it affects Squiggle
 
-## If you self-host
+## What this repository covers
 
-Squiggle is GPL-3.0 and you're welcome to run your own. Two things to get right
-before you put it on the public internet: set `ADMIN_EMAILS` (or use real admin
-accounts) so `/admin` isn't reachable by anyone, and terminate TLS in front of
-it. `SQUIGGLE_BOT_KEY` is a shared secret — treat it like a password.
+This repository is the editor — the code that runs in a browser. It is GPL-3.0
+and you are welcome to build and host it.
 
-There is no security support commitment for self-hosted instances, but fixes
-land in the public repo and the changelog says what they were.
+The Squiggle server is a separate program and is not distributed here, so
+issues in it can't be reported as issues against this repository. Report them
+by the private route above; they are the ones most worth telling us about,
+because they are the ones affecting children using the hosted service.
