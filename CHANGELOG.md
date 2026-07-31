@@ -9,6 +9,15 @@ described the service and the editor as one program, which they are not, and
 splitting the narrative after the fact would have meant rewriting descriptions
 of work rather than just moving files.
 
+## Unreleased
+
+### Changed
+
+- A refusal in co-play chat now carries the server's warning with it, so the
+  panel around the player can show what was recognised and what it costs the
+  account rather than a line in the chat log. The editor forwards it and does
+  not re-derive any of it — the decision is the server's.
+
 ## 1.5.0
 
 ### Added

@@ -455,7 +455,9 @@ const handle = msg => {
         break;
 
     case 'play-blocked':
-        emit('blocked', {message: msg.message});
+        // The warning rides along: the panel around this player is what shows
+        // it, and it is the server's decision, not something to re-derive.
+        emit('blocked', {message: msg.message, category: msg.category, warning: msg.warning});
         break;
 
     case 'play-error':
