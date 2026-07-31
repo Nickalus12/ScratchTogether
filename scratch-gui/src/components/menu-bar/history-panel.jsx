@@ -2,6 +2,12 @@ import React from 'react';
 
 import collab from '../../lib/collab';
 
+/* The dev server (8601) and the API (4455) are different origins; in
+ * production they are the same one and this is empty. login.js has always
+ * known this — the history panel did not, so History could only ever fail
+ * locally, which is exactly where it needed to be tried. */
+const apiBase = () => (location.port === '8601' ? `http://${location.hostname}:4455` : '');
+
 /*
  * Room history.
  *
@@ -92,7 +98,7 @@ class HistoryPanel extends React.Component {
          * unhelpful to the person reading it and impossible to diagnose from a
          * screenshot.
          */
-        fetch(`/api/rooms/${encodeURIComponent(room)}/history`, {credentials: 'same-origin'})
+        fetch(`${apiBase()}/api/rooms/${encodeURIComponent(room)}/history`, {credentials: 'same-origin'})
             .then(r => r.json().catch(() => ({})).then(d => {
                 if (!r.ok) {
                     const err = new Error(d.error || `http-${r.status}`);
@@ -134,8 +140,8 @@ class HistoryPanel extends React.Component {
     // Only reached after the row has been clicked twice — the second click IS
     // the confirmation, so there is nothing left to ask here.
     restore (v) {
-        this.setState({busy: v.file, confirming: null});
-        fetch(`/api/rooms/${encodeURIComponent(this.room())}/history/restore`, {
+        this.setState({busy: v.file, confirming: null, error: null});
+        fetch(`${apiBase()}/api/rooms/${encodeURIComponent(this.room())}/history/restore`, {
             method: 'POST',
             credentials: 'same-origin',
             headers: {'content-type': 'application/json', 'x-squiggle': '1'},
@@ -219,7 +225,7 @@ class HistoryPanel extends React.Component {
                                 color: T.faint,
                                 padding: '2px 4px 8px'
                             }}
-                        >{'Earlier today'}</div>
+                        >{'Earlier versions'}</div>
 
                         {loading && <div style={{color: T.dim, fontSize: '13px', padding: '6px'}}>
                             {'Looking…'}</div>}

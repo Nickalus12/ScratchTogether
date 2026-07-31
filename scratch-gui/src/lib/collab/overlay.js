@@ -357,13 +357,18 @@ class Overlay {
         el.dataset.peer = id;
         el.style.cssText = 'position:absolute;left:0;top:0;will-change:transform;display:none';
         const shape = CURSOR_SHAPES[p.style] || CURSOR_SHAPES.arrow;
+        // The colour is server-issued from a fixed palette, so it cannot carry
+        // anything today — but it is peer-supplied data being written into
+        // markup, and the only thing standing between it and an injected
+        // attribute is a validator in another program. Escape it here too.
+        const color = this._esc(p.color);
         el.innerHTML = `
           <svg width="${shape.w}" height="${shape.h}" viewBox="${shape.box}"
                style="display:block;filter:drop-shadow(0 1px 2px rgba(0,0,0,.4))">
-            <path d="${shape.d}" fill="${p.color}" stroke="#fff" stroke-width="${shape.stroke}"
+            <path d="${shape.d}" fill="${color}" stroke="#fff" stroke-width="${shape.stroke}"
                   stroke-linejoin="round"/>
           </svg>
-          <div style="background:${p.color};color:#fff;font:bold 11px Helvetica,Arial;border-radius:4px;
+          <div style="background:${color};color:#fff;font:bold 11px Helvetica,Arial;border-radius:4px;
                       padding:2px 6px;margin:-2px 0 0 10px;white-space:nowrap">${this._esc(p.name)}</div>`;
         this.cursorLayer.appendChild(el);
         p._cursorEl = el;

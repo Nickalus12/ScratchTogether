@@ -88,6 +88,35 @@ const inRect = (el, x, y) => {
     const r = el.getBoundingClientRect();
     return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
 };
+
+/*
+ * One pair of document listeners for every comment on the workspace, rather
+ * than a pair per comment.
+ *
+ * Each comment used to register its own capture-phase mousedown and touchstart
+ * and measure its own header inside them, so a project with forty comments ran
+ * eighty handlers and forced eighty layouts on every single click anywhere in
+ * the editor. The press cannot be found from the event target — the header is
+ * deliberately transparent to the pointer, so the target is always the drag bar
+ * underneath — but the comment it belongs to can be, and that is enough to
+ * narrow the hit test to exactly one rectangle.
+ */
+const ROOT_CLASS = 'sq-annotated-comment';
+const headerByRoot = new WeakMap(); // comment svg root -> {comment, wrap, title}
+
+const notePress = e => {
+    const p = (e.touches && e.touches[0]) || e;
+    const target = e.target;
+    if (!target || typeof target.closest !== 'function') return;
+    const root = target.closest(`.${ROOT_CLASS}`);
+    const entry = root && headerByRoot.get(root);
+    if (!entry || !entry.comment.sqHeader_ || entry.comment.isMinimized()) return;
+    if (!inRect(entry.wrap, p.clientX, p.clientY)) return;
+    activePress = {x: p.clientX, y: p.clientY, title: entry.title};
+};
+for (const ev of ['mousedown', 'touchstart']) {
+    document.addEventListener(ev, notePress, true);
+}
 const settlePress = e => {
     if (!activePress) return;
     const p = (e.changedTouches && e.changedTouches[0]) || e;
@@ -165,23 +194,6 @@ const buildHeader = comment => {
     body.appendChild(wrap);
     fo.appendChild(body);
 
-    /* Presses are not intercepted at all — the header is pointer-transparent,
-     * so a press on the bar reaches Blockly's own handle and drags the comment
-     * exactly as it does on an un-annotated one. All that is recorded here is
-     * where the press began, so a release that never moved can be treated as
-     * "edit the title". The listener is on the document because the press
-     * never lands on the header in the first place. */
-    const notePress = e => {
-        if (!comment.sqHeader_ || comment.isMinimized()) return;
-        const p = (e.touches && e.touches[0]) || e;
-        if (!inRect(wrap, p.clientX, p.clientY)) return;
-        activePress = {x: p.clientX, y: p.clientY, title};
-    };
-    comment.sqPress_ = notePress;
-    for (const ev of ['mousedown', 'touchstart']) {
-        document.addEventListener(ev, notePress, true);
-    }
-
     typeBtn.addEventListener('click', e => {
         e.stopPropagation();
         openTypeMenu(comment, typeBtn);
@@ -206,7 +218,16 @@ const buildHeader = comment => {
     });
 
     comment.sqHeader_ = {fo, wrap, typeBtn, title};
-    comment.getSvgRoot().appendChild(fo);
+    /* Presses are not intercepted at all — the header is pointer-transparent,
+     * so a press on the bar reaches Blockly's own handle and drags the comment
+     * exactly as it does on an un-annotated one. All the shared document
+     * listener records is where the press began, so a release that never moved
+     * can be treated as "edit the title"; this is what lets it find its way
+     * back from the pressed element to this header. */
+    const root = comment.getSvgRoot();
+    root.classList.add(ROOT_CLASS);
+    headerByRoot.set(root, {comment, wrap, title});
+    root.appendChild(fo);
     return comment.sqHeader_;
 };
 
@@ -231,7 +252,14 @@ const applyAnnotation = (comment, SB) => {
     const info = typeInfo(p.type);
     const section = isSection(p.type);
 
-    if (comment.textarea_ && comment.textarea_.value !== p.body) {
+    /* Never while they are typing in it. Assigning `value` moves the caret to
+     * the end, so a partner's edit landing mid-sentence used to throw the
+     * cursor across the box — the title has been guarded against exactly this
+     * since it was written, and the body was not. Comment bodies are still
+     * last-write-wins; this only stops the write happening under the hands of
+     * the person composing one. */
+    if (comment.textarea_ && comment.textarea_.value !== p.body &&
+        document.activeElement !== comment.textarea_) {
         comment.textarea_.value = p.body;
     }
 
@@ -324,12 +352,8 @@ const patchComments = SB => {
     };
 
     proto.dispose = function () {
-        if (this.sqPress_) {
-            for (const ev of ['mousedown', 'touchstart']) {
-                document.removeEventListener(ev, this.sqPress_, true);
-            }
-            this.sqPress_ = null;
-        }
+        const root = this.getSvgRoot && this.getSvgRoot();
+        if (root) headerByRoot.delete(root);
         if (this.sqHeader_) {
             this.sqHeader_.fo.remove();
             this.sqHeader_ = null;
