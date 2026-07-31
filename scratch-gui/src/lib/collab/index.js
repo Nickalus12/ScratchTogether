@@ -170,6 +170,46 @@ const hasPeers = () => overlay.peers.size > 0;
  */
 const canWrite = () => state.active && state.canEdit && !state.applyingRemote;
 
+/*
+ * A viewer's edit is refused at the call, not after it.
+ *
+ * Suppressing the outgoing message alone still let the change land in this
+ * tab's own VM, so the editor showed work that the next snapshot was going to
+ * erase — the same lie, told locally. These wrappers are already the one place
+ * every structural edit passes through, so they are where it stops.
+ *
+ * `applyingRemote` is excluded on purpose: everything a viewer is here to SEE
+ * arrives through these same methods.
+ */
+const REFUSE_TOAST_MS = 4000;
+const refuseIfViewer = () => {
+    if (!state.active || state.canEdit || state.applyingRemote) return false;
+    if (Date.now() - (state.lastRefuseAt || 0) > REFUSE_TOAST_MS) {
+        state.lastRefuseAt = Date.now();
+        overlay.toast('👀 You are watching — ask the owner for edit access', '#8a8fa3');
+    }
+    return true;
+};
+
+/*
+ * The palette is a separate Blockly workspace and does not inherit readOnly,
+ * and the drag it starts creates the block on the workspace it points at — so
+ * that is the one worth asking. Without this a viewer can still pull blocks
+ * out of the palette onto a canvas whose every other edit is refused.
+ */
+const patchFlyoutReadOnly = SB => {
+    if (!SB || !SB.Gesture || SB.Gesture.prototype.__squiggleReadOnly) return;
+    const proto = SB.Gesture.prototype;
+    const original = proto.updateIsDraggingFromFlyout_;
+    if (typeof original !== 'function') return;
+    proto.updateIsDraggingFromFlyout_ = function () {
+        const target = this.flyout_ && this.flyout_.targetWorkspace_;
+        if (target && target.options && target.options.readOnly) return false;
+        return original.call(this);
+    };
+    proto.__squiggleReadOnly = true;
+};
+
 const applyEditability = () => {
     // Blockly reads options.readOnly live — isMovable/isDeletable/isEditable
     // all consult it — so flipping it here is enough to stop dragging,
@@ -177,6 +217,7 @@ const applyEditability = () => {
     if (state.workspace && state.workspace.options) {
         state.workspace.options.readOnly = !state.canEdit;
     }
+    patchFlyoutReadOnly(state.ScratchBlocks);
     if (state.canEdit) {
         if (state.readOnlyBannerUp) {
             state.readOnlyBannerUp = false;
@@ -685,10 +726,11 @@ const SNAPSHOT_METHODS = [
 
 // Light operations relay as tiny targeted messages instead of snapshots.
 // buildMsg runs BEFORE the mutation so it can capture pre-change names.
-const wrapTargeted = (vm, method, buildMsg) => {
+const wrapTargeted = (vm, method, buildMsg, refusal) => {
     if (typeof vm[method] !== 'function') return;
     const original = vm[method].bind(vm);
     vm[method] = (...args) => {
+        if (refuseIfViewer()) return refusal && refusal();
         const msg = canWrite() ? buildMsg(...args) : null;
         const result = original(...args);
         if (msg) {
@@ -706,6 +748,7 @@ const wrapVm = vm => {
         if (typeof vm[method] !== 'function') continue;
         const original = vm[method].bind(vm);
         vm[method] = (...args) => {
+            if (refuseIfViewer()) return Promise.resolve();
             // Capture NOW — the flag is long reset by the time the promise
             // resolves, and a remote-triggered rebroadcast would loop.
             const wasRemote = state.applyingRemote;
@@ -728,6 +771,7 @@ const wrapVm = vm => {
         if (typeof vm[method] !== 'function') return;
         const original = vm[method].bind(vm);
         vm[method] = (...args) => {
+            if (refuseIfViewer()) return Promise.resolve();
             const wasRemote = !canWrite();
             const before = wasRemote ? null : new Set(
                 vm.runtime.targets.filter(t => t.isOriginal).map(t => t.getName()));
@@ -755,6 +799,7 @@ const wrapVm = vm => {
 
     const originalDeleteSprite = vm.deleteSprite.bind(vm);
     vm.deleteSprite = targetId => {
+        if (refuseIfViewer()) return () => {};
         const wasRemote = !canWrite();
         const name = targetNameById(targetId);
         const result = originalDeleteSprite(targetId);
@@ -772,6 +817,7 @@ const wrapVm = vm => {
         if (typeof vm[method] !== 'function') return;
         const original = vm[method].bind(vm);
         vm[method] = (md5ext, costumeObject, optTargetId, optVersion) => {
+            if (refuseIfViewer()) return Promise.resolve();
             const wasRemote = !canWrite();
             const result = original(md5ext, costumeObject, optTargetId, optVersion);
             if (!wasRemote) {
@@ -808,6 +854,7 @@ const wrapVm = vm => {
 
     const originalAddSound = vm.addSound.bind(vm);
     vm.addSound = (soundObject, optTargetId) => {
+        if (refuseIfViewer()) return Promise.resolve();
         const wasRemote = !canWrite();
         const result = originalAddSound(soundObject, optTargetId);
         if (!wasRemote) {
@@ -877,6 +924,7 @@ const wrapVm = vm => {
     };
     const originalPostSpriteInfo = vm.postSpriteInfo.bind(vm);
     vm.postSpriteInfo = data => {
+        if (refuseIfViewer()) return;
         const result = originalPostSpriteInfo(data);
         // While the project is RUNNING each machine simulates independently —
         // syncing positions mid-game makes the simulations fight (rubber-band
@@ -925,7 +973,7 @@ const wrapVm = vm => {
     wrapTargeted(vm, 'deleteCostume', index => {
         const target = editingTargetName();
         return {target, index, ident: costumeIdent(target, index)};
-    });
+    }, () => () => {});
     wrapTargeted(vm, 'duplicateCostume', index => {
         const target = editingTargetName();
         return {target, index, ident: costumeIdent(target, index)};
@@ -933,7 +981,7 @@ const wrapVm = vm => {
     wrapTargeted(vm, 'deleteSound', index => {
         const target = editingTargetName();
         return {target, index, ident: soundIdent(target, index)};
-    });
+    }, () => () => {});
     wrapTargeted(vm, 'duplicateSound', index => {
         const target = editingTargetName();
         return {target, index, ident: soundIdent(target, index)};
@@ -955,6 +1003,7 @@ const wrapVm = vm => {
 
     const originalUpdateSvg = vm.updateSvg.bind(vm);
     vm.updateSvg = (costumeIndex, svg, rotationCenterX, rotationCenterY) => {
+        if (refuseIfViewer()) return;
         // Capture the diff base BEFORE the mutation: what this export was built
         // from (the last export/apply for this costume, or the current asset).
         let target = null;
@@ -1054,6 +1103,7 @@ const wrapVm = vm => {
 
     const originalUpdateBitmap = vm.updateBitmap.bind(vm);
     vm.updateBitmap = (costumeIndex, bitmap, rotationCenterX, rotationCenterY, bitmapResolution) => {
+        if (refuseIfViewer()) return;
         const result = originalUpdateBitmap(costumeIndex, bitmap, rotationCenterX, rotationCenterY, bitmapResolution);
         if (canWrite()) {
             const target = editingTargetName();
