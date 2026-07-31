@@ -78,6 +78,9 @@ class TogetherBlocks {
             this.runtime.startHats('together_whenGameMessage', {
                 TEXT: this._lastMessageName
             });
+            // Started after the reporters are set, so a script under this hat
+            // can read the name and value of the message that woke it.
+            this.runtime.startHats('together_whenAnyGameMessage');
         } else if (msg.action === 'var') {
             const name = str(msg.name);
             if (name) this._shared[name] = msg.value == null ? '' : msg.value;
@@ -139,6 +142,24 @@ class TogetherBlocks {
                             defaultValue: 'score'
                         }
                     }
+                },
+                /*
+                 * The catch-all. "when I receive [score]" makes you name every
+                 * message up front, which is fine until you are writing the
+                 * thing that logs them, relays them, or reacts to whatever the
+                 * other player just did — and then you are stuck adding a hat
+                 * per message and editing it whenever the game changes.
+                 *
+                 * Inside this hat, `game message name` and `game message
+                 * value` tell you which one arrived, so one script can handle
+                 * all of them.
+                 */
+                {
+                    opcode: 'whenAnyGameMessage',
+                    blockType: 'event',
+                    text: 'when I receive any game message',
+                    isEdgeActivated: false,
+                    shouldRestartExistingThreads: true
                 },
                 {
                     opcode: 'gameMessageName',
@@ -254,6 +275,7 @@ class TogetherBlocks {
         this._lastMessageValue = value;
         // Fire local hats so sender scripts can react (Scratch-style broadcast).
         this.runtime.startHats('together_whenGameMessage', {TEXT: name});
+        this.runtime.startHats('together_whenAnyGameMessage');
         const net = getNet();
         if (net) {
             net.send({type: 'game', action: 'msg', name, value});
