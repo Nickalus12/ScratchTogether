@@ -85,10 +85,27 @@ class HistoryPanel extends React.Component {
             return;
         }
         this.setState({loading: true, error: null});
+        /*
+         * The server says why. This used to collapse every outcome into "Could
+         * not read the history", so a permission problem, a signed-out
+         * session and an actual outage were one indistinguishable red line —
+         * unhelpful to the person reading it and impossible to diagnose from a
+         * screenshot.
+         */
         fetch(`/api/rooms/${encodeURIComponent(room)}/history`, {credentials: 'same-origin'})
-            .then(r => (r.ok ? r.json() : Promise.reject(new Error('http'))))
+            .then(r => r.json().catch(() => ({})).then(d => {
+                if (!r.ok) {
+                    const err = new Error(d.error || `http-${r.status}`);
+                    err.friendly = d.message;
+                    throw err;
+                }
+                return d;
+            }))
             .then(d => this.setState({versions: d.versions || [], loading: false}))
-            .catch(() => this.setState({loading: false, error: 'Could not read the history.'}));
+            .catch(e => this.setState({
+                loading: false,
+                error: e.friendly || 'Could not reach the server — check your connection.'
+            }));
     }
 
     handleToggle () {
@@ -124,9 +141,21 @@ class HistoryPanel extends React.Component {
             headers: {'content-type': 'application/json', 'x-squiggle': '1'},
             body: JSON.stringify({file: v.file})
         })
-            .then(r => (r.ok ? r.json() : Promise.reject(new Error('http'))))
+            .then(r => r.json().catch(() => ({})).then(d => {
+                if (!r.ok) {
+                    const err = new Error(d.error || `http-${r.status}`);
+                    // Most likely reason now: only the host may put a version
+                    // back, because it replaces what everyone else is doing.
+                    err.friendly = d.message;
+                    throw err;
+                }
+                return d;
+            }))
             .then(() => this.setState({busy: null, open: false}))
-            .catch(() => this.setState({busy: null, error: 'Could not put it back.'}));
+            .catch(e => this.setState({
+                busy: null,
+                error: e.friendly || 'Could not put it back — check your connection.'
+            }));
     }
 
     render () {
