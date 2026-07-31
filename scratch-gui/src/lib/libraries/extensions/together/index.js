@@ -30,7 +30,22 @@ const VAR_FLUSH_MS = 50;
 // Beyond this the sender is in a runaway loop and dropping is kinder than an
 // unbounded queue eating the tab's memory.
 const MAX_PENDING = 64;
-const MAX_INBOX = 64;
+const MAX_INBOX = 256;
+/*
+ * Delivery used to be one message per frame, which is 30 a second against an
+ * inbound budget of 25 a second PER PEER — so a five-player room could post
+ * 125 and the inbox spent its life full, silently dropping the oldest.
+ *
+ * One-per-frame existed for a real reason: the reporters were module state, so
+ * two messages in a frame both wrote `game message name` before either script
+ * ran. That is fixed properly below — each started thread carries the message
+ * that started it — so a frame can now deliver a backlog without lying about
+ * which message any given script is handling. The cap is only here so a huge
+ * burst costs several frames instead of one very long one.
+ */
+const MAX_DELIVER_PER_FRAME = 8;
+// Where a hat thread remembers the message it was started for.
+const THREAD_MSG = '_squiggleTogetherMsg';
 
 class TogetherBlocks {
     constructor (runtime) {
@@ -62,6 +77,7 @@ class TogetherBlocks {
         this._tokensAt = 0;
         this._pendingMsgs = new Map();
         this._pendingVars = new Map();
+        this._pendingDeltas = new Map();
         this._varTimer = null;
         this._warnedFlood = false;
 
@@ -120,12 +136,8 @@ class TogetherBlocks {
         const now = this._now();
         this._refill(now);
 
-        if (this._inbox.length) {
-            const next = this._inbox.shift();
-            this._lastMessageName = next.name;
-            this._lastMessageValue = next.value;
-            this.runtime.startHats('together_whenGameMessage', {TEXT: next.name});
-            this.runtime.startHats('together_whenAnyGameMessage');
+        for (let i = 0; i < MAX_DELIVER_PER_FRAME && this._inbox.length; i++) {
+            this._deliver(this._inbox.shift());
         }
 
         if (this._pendingMsgs.size) {
@@ -137,6 +149,36 @@ class TogetherBlocks {
                 if (net) net.send({type: 'game', action: 'msg', name, value});
             }
         }
+    }
+
+    /**
+     * Start the hats for one message, and tell the threads it started which
+     * message that was.
+     *
+     * The tag is what lets a frame carry more than one message: a script asking
+     * for `game message value` is asking about the message ITS hat fired on,
+     * not about whichever one happened to arrive most recently. Reading that
+     * off the thread makes the answer right no matter how many were delivered
+     * together, or in what order the threads then run.
+     * @param {{name: string, value: string}} m the message being delivered
+     */
+    _deliver (m) {
+        // Still kept: a reporter used outside any hat (a green-flag script, a
+        // monitor) has no thread to ask, and "the last one that arrived" is the
+        // only meaningful answer there.
+        this._lastMessageName = m.name;
+        this._lastMessageValue = m.value;
+        this._tagThreads(this.runtime.startHats('together_whenGameMessage', {TEXT: m.name}), m);
+        this._tagThreads(this.runtime.startHats('together_whenAnyGameMessage'), m);
+    }
+
+    /**
+     * @param {Array|undefined} threads threads startHats returned (undefined if the hat is unknown)
+     * @param {{name: string, value: string}} m message to attach
+     */
+    _tagThreads (threads, m) {
+        if (!threads) return;
+        for (let i = 0; i < threads.length; i++) threads[i][THREAD_MSG] = m;
     }
 
     /**
@@ -214,6 +256,7 @@ class TogetherBlocks {
         this._inbox = [];
         this._pendingMsgs.clear();
         this._pendingVars.clear();
+        this._pendingDeltas.clear();
         if (this._varTimer) {
             clearTimeout(this._varTimer);
             this._varTimer = null;
@@ -459,12 +502,14 @@ class TogetherBlocks {
         this._pendingMsgs.set(name, value);
     }
 
-    gameMessageName () {
-        return this._lastMessageName;
+    gameMessageName (args, util) {
+        const m = util && util.thread && util.thread[THREAD_MSG];
+        return m ? m.name : this._lastMessageName;
     }
 
-    gameMessageValue () {
-        return this._lastMessageValue;
+    gameMessageValue (args, util) {
+        const m = util && util.thread && util.thread[THREAD_MSG];
+        return m ? m.value : this._lastMessageValue;
     }
 
     setSharedVariable (args) {
@@ -478,6 +523,9 @@ class TogetherBlocks {
         // Skip no-op writes — cuts socket + disk work when a loop sets the same value.
         if (this._shared[name] === value) return;
         this._shared[name] = value;
+        // An outright set supersedes any increment still waiting to go out:
+        // whatever that increment was for, this overwrites it.
+        this._pendingDeltas.delete(name);
         this._queueVar(name, value);
     }
 
@@ -492,15 +540,56 @@ class TogetherBlocks {
      */
     _queueVar (name, value) {
         this._pendingVars.set(name, value);
+        this._startVarTimer();
+    }
+
+    /*
+     * An increment cannot travel as the number it produced.
+     *
+     * Two players scoring in the same moment both read 5, both compute 6, and
+     * both send "set score to 6" — so one of the two points a child just
+     * earned is gone, in the single block a multiplayer game is most likely to
+     * keep score with. What goes on the wire is therefore "+1", and the server
+     * — the one place holding one copy of the value — does the addition and
+     * tells everyone, including us, what it came to.
+     *
+     * The local value still moves immediately, because a score that waits for
+     * a round trip feels broken; the server's answer arrives moments later and
+     * is what stands.
+     */
+    _queueDelta (name, delta) {
+        // A set for this name is already queued and has not gone out. It will
+        // overwrite whatever the server holds, so the increment belongs to
+        // that value rather than to the server's — fold it in.
+        if (this._pendingVars.has(name)) {
+            const base = Number(this._pendingVars.get(name));
+            this._pendingVars.set(name, (Number.isFinite(base) ? base : 0) + delta);
+        } else {
+            // Increments accumulate. Coalescing them the way sets coalesce
+            // (keep the newest, drop the rest) would throw away every point
+            // but the last one scored inside a 50ms window.
+            this._pendingDeltas.set(name, (this._pendingDeltas.get(name) || 0) + delta);
+        }
+        this._startVarTimer();
+    }
+
+    _startVarTimer () {
         if (this._varTimer) return;
         this._varTimer = setTimeout(() => {
             this._varTimer = null;
             const net = getNet();
-            const pending = this._pendingVars;
+            const sets = this._pendingVars;
+            const deltas = this._pendingDeltas;
             this._pendingVars = new Map();
+            this._pendingDeltas = new Map();
             if (!net) return;
-            for (const [key, val] of pending) {
+            // Sets first: an increment that survived alongside one is meant to
+            // land on top of it, not underneath.
+            for (const [key, val] of sets) {
                 net.send({type: 'game', action: 'var', name: key, value: val});
+            }
+            for (const [key, val] of deltas) {
+                net.send({type: 'game', action: 'var-add', name: key, delta: val});
             }
         }, VAR_FLUSH_MS);
     }
@@ -509,12 +598,11 @@ class TogetherBlocks {
         this._ensureBound();
         const name = str(args.NAME);
         if (!name) return;
-        const cur = Number(this._shared[name]);
         const delta = Number(args.VALUE);
-        const next = (Number.isFinite(cur) ? cur : 0) + (Number.isFinite(delta) ? delta : 0);
-        if (this._shared[name] === next) return;
-        this._shared[name] = next;
-        this._queueVar(name, next);
+        if (!Number.isFinite(delta) || delta === 0) return;
+        const cur = Number(this._shared[name]);
+        this._shared[name] = (Number.isFinite(cur) ? cur : 0) + delta;
+        this._queueDelta(name, delta);
     }
 
     getSharedVariable (args) {

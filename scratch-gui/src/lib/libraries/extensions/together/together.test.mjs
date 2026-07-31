@@ -60,8 +60,16 @@ const makeRuntime = () => {
         emit (event) {
             for (const cb of (listeners.get(event) || []).slice()) cb();
         },
+        /*
+         * Returns the threads it started, as scratch-vm's own startHats does.
+         * That return value is load-bearing: it is how the extension tells
+         * each started script which message it is handling, which is what
+         * makes delivering several in one frame safe.
+         */
         startHats (opcode, fields) {
-            this.hats.push({opcode, fields});
+            const thread = {opcode, fields};
+            this.hats.push(thread);
+            return [thread];
         }
     };
 };
@@ -117,6 +125,16 @@ const step = (runtime, clock, ms = 33) => {
     runtime.emit('BEFORE_EXECUTE');
 };
 
+/** What `game message name` / `value` report from inside one hat's script. */
+const reads = (ext, thread) => ({
+    name: ext.gameMessageName({}, {thread}),
+    value: ext.gameMessageValue({}, {thread})
+});
+
+/** The hat started for a particular message name. */
+const hatFor = (runtime, name) => runtime.hats.find(h =>
+    h.opcode === 'together_whenGameMessage' && h.fields && h.fields.TEXT === name);
+
 console.log('\nreceiving messages');
 {
     const {runtime, net, ext, clock} = setup();
@@ -136,21 +154,32 @@ console.log('\nreceiving messages');
         ext.gameMessageName() === 'score' && ext.gameMessageValue() === '10');
 
     /*
-     * The bug that motivated the queue. Both messages land in one frame; if
-     * they were delivered on arrival, both hats' scripts would read "hit"
-     * because the second write clobbered the first before either ran.
+     * The bug that motivated the queue, and the reason a frame can now carry
+     * more than one message.
+     *
+     * Delivering on arrival made both hats' scripts read "hit", because the
+     * second write clobbered the reporters before either ran. Delivering one
+     * per frame fixed that by making the reporters describe the only message
+     * in flight — correct, but a hard ceiling of 30 a second against an
+     * inbound budget of 25 a second PER PEER, so a busy room spent its life
+     * dropping the backlog. Now both are delivered together and the reporters
+     * answer per script, which is the property that was actually wanted.
      */
     runtime.hats.length = 0;
     net.fire('game', {action: 'msg', name: 'score', value: '20'});
     net.fire('game', {action: 'msg', name: 'hit', value: 'left'});
 
     step(runtime, clock);
-    ok('two messages in one frame: the first is delivered alone',
-        ext.gameMessageName() === 'score' && ext.gameMessageValue() === '20',
-        {name: ext.gameMessageName(), value: ext.gameMessageValue()});
-
-    step(runtime, clock);
-    ok('and the second arrives on the frame after, with its own values',
+    const scoreHat = hatFor(runtime, 'score');
+    const hitHat = hatFor(runtime, 'hit');
+    ok('two messages in one frame: both are delivered', !!scoreHat && !!hitHat, runtime.hats);
+    ok('the first hat reads its own message',
+        reads(ext, scoreHat).name === 'score' && reads(ext, scoreHat).value === '20',
+        reads(ext, scoreHat));
+    ok('the second hat reads its own message',
+        reads(ext, hitHat).name === 'hit' && reads(ext, hitHat).value === 'left',
+        reads(ext, hitHat));
+    ok('a script with no hat still sees the newest message',
         ext.gameMessageName() === 'hit' && ext.gameMessageValue() === 'left',
         {name: ext.gameMessageName(), value: ext.gameMessageValue()});
 
@@ -179,13 +208,13 @@ console.log('\nsending messages');
     e3.broadcastGameMessage({NAME: 'score', VALUE: '10'});
     e3.broadcastGameMessage({NAME: 'lives', VALUE: '3'});
     step(r3, c3);
-    ok('own broadcast #1 is delivered with its own values',
-        e3.gameMessageName() === 'score' && e3.gameMessageValue() === '10',
-        {name: e3.gameMessageName(), value: e3.gameMessageValue()});
-    step(r3, c3);
-    ok('own broadcast #2 follows with its own values',
-        e3.gameMessageName() === 'lives' && e3.gameMessageValue() === '3',
-        {name: e3.gameMessageName(), value: e3.gameMessageValue()});
+    const h1 = hatFor(r3, 'score');
+    const h2 = hatFor(r3, 'lives');
+    ok('both of my own broadcasts arrive on the next frame', !!h1 && !!h2, r3.hats);
+    ok('own broadcast #1 is read with its own values',
+        reads(e3, h1).name === 'score' && reads(e3, h1).value === '10', reads(e3, h1));
+    ok('own broadcast #2 is read with its own values',
+        reads(e3, h2).name === 'lives' && reads(e3, h2).value === '3', reads(e3, h2));
 
     // Burn the budget the way a `forever` loop would.
     for (let i = 0; i < 200; i++) ext.broadcastGameMessage({NAME: 'spam', VALUE: String(i)});
@@ -233,6 +262,66 @@ console.log('\nshared variables');
     // Values arriving from other players.
     net.fire('game', {action: 'var', name: 'level', value: 3});
     ok('a remote value is readable', ext.getSharedVariable({NAME: 'level'}) === 3);
+    net.fire('game', {action: 'var', name: 'level', value: 9});
+    ok('a later remote value replaces it', ext.getSharedVariable({NAME: 'level'}) === 9);
+}
+
+/*
+ * "change shared variable by" is the block a multiplayer game keeps score
+ * with, and it cannot travel as the number it produced: two players scoring in
+ * the same moment both read 5, both compute 6, and one child's point is gone.
+ * What goes out is the delta; the server owns the addition.
+ */
+console.log('\nshared variables: increments');
+{
+    const {net, ext} = setup();
+
+    ext.changeSharedVariable({NAME: 'score', VALUE: 1});
+    ok('the local value moves at once', ext.getSharedVariable({NAME: 'score'}) === 1);
+
+    await new Promise(r => setTimeout(r, 90));
+    ok('what went out is a delta, not a value',
+        net.sent.length === 1 && net.sent[0].action === 'var-add' &&
+        net.sent[0].name === 'score' && net.sent[0].delta === 1, net.sent);
+    ok('no absolute write was sent alongside it',
+        net.sent.every(m => m.action !== 'var'), net.sent);
+
+    // Increments must accumulate. Coalescing them the way sets coalesce —
+    // keep the newest, drop the rest — would throw away every point but one.
+    net.sent.length = 0;
+    ext.changeSharedVariable({NAME: 'score', VALUE: 1});
+    ext.changeSharedVariable({NAME: 'score', VALUE: 1});
+    ext.changeSharedVariable({NAME: 'score', VALUE: 3});
+    await new Promise(r => setTimeout(r, 90));
+    ok('three increments in one burst became one message',
+        net.sent.length === 1, net.sent);
+    ok('carrying their sum, not the last of them',
+        net.sent[0] && net.sent[0].delta === 5, net.sent);
+
+    // The server is the authority: its answer stands over the local guess,
+    // which was made without knowing about anyone else's increments.
+    net.fire('game', {action: 'var', name: 'score', value: 40});
+    ok('the server value overrides the optimistic one',
+        ext.getSharedVariable({NAME: 'score'}) === 40);
+
+    net.sent.length = 0;
+    ext.changeSharedVariable({NAME: 'score', VALUE: 0});
+    await new Promise(r => setTimeout(r, 90));
+    ok('changing by zero sends nothing', net.sent.length === 0, net.sent);
+
+    // A set supersedes an increment that has not gone out — it overwrites
+    // whatever that increment was going to land on.
+    net.sent.length = 0;
+    ext.changeSharedVariable({NAME: 'lives', VALUE: -1});
+    ext.setSharedVariable({NAME: 'lives', VALUE: 3});
+    await new Promise(r => setTimeout(r, 90));
+    ok('a set after an increment sends one absolute write',
+        net.sent.length === 1 && net.sent[0].action === 'var' && net.sent[0].value === 3, net.sent);
+}
+
+console.log('\nshared variables: remote');
+{
+    const {net, ext} = setup();
     net.fire('game-state', {vars: {level: 9, lives: 3}});
     ok('a state replay overwrites', ext.getSharedVariable({NAME: 'level'}) === 9);
     ok('unknown variables read as empty', ext.getSharedVariable({NAME: 'nope'}) === '');
