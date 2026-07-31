@@ -87,6 +87,23 @@ const state = {
     // base), for bitmaps the freshest known full pixels (patch base + shadow).
     paintBase: new Map(), // "target|index|svg" -> text; "target|index|bmp" -> {pixels,width,height}
     pointerDown: false, // mid-stroke guard: remote paint defers until pointer release
+    // Bitmap edits waiting out their debounce, keyed by costume. A single slot
+    // meant painting one costume and switching to another inside 250ms threw
+    // the first costume's stroke away entirely — it was never sent AND never
+    // cached, because both happen inside the send.
+    pendingBitmaps: new Map(), // "target|costumeIndex" -> {meta, pixels}
+    // Depth, not a flag — for the same reason applyingRemote is one. Two
+    // workspace rebuilds can overlap around Blockly's setTimeout(0) event
+    // drain, and a boolean lets the first one's resume unsuspend the second
+    // one's still-pending synthetic events, which then broadcast as edits.
+    workspaceSuspended: 0,
+    // When the whole run of deferred snapshots started, so an unbroken stream
+    // of edits cannot postpone the only save path forever.
+    snapshotDeferredSince: 0,
+    // Set while repairing a known divergence: apply the room's snapshot even
+    // if it matches the last one we saw, because what we saw is not what we
+    // have any more.
+    forceApplyNextSnapshot: false,
     selfId: null,
     role: 'editor',
     canEdit: true,
@@ -138,6 +155,38 @@ const cachePaint = msg => {
 
 // Presence/cursor traffic is pointless with nobody in the room.
 const hasPeers = () => overlay.peers.size > 0;
+
+/*
+ * Whether this tab may change the project.
+ *
+ * A viewer used to be told once, in a toast that faded in under three seconds,
+ * and then handed a fully working editor. Everything they did applied locally,
+ * went to the server, and was refused there — silently, because the client had
+ * no handler for the refusal — until the next snapshot replaced the lot. The
+ * only sign anything was wrong was an afternoon's work disappearing.
+ *
+ * So: viewers send nothing, the workspace stops accepting edits, and the
+ * reason stays on screen instead of fading.
+ */
+const canWrite = () => state.active && state.canEdit && !state.applyingRemote;
+
+const applyEditability = () => {
+    // Blockly reads options.readOnly live — isMovable/isDeletable/isEditable
+    // all consult it — so flipping it here is enough to stop dragging,
+    // deleting and field edits on an already-injected workspace.
+    if (state.workspace && state.workspace.options) {
+        state.workspace.options.readOnly = !state.canEdit;
+    }
+    if (state.canEdit) {
+        if (state.readOnlyBannerUp) {
+            state.readOnlyBannerUp = false;
+            overlay.banner(null);
+        }
+        return;
+    }
+    state.readOnlyBannerUp = true;
+    overlay.banner('You are watching this project — your changes will not be saved.', {kind: 'busy'});
+};
 
 // Send presence only when it actually changed (or as a 3s keepalive refresh).
 const sendPresence = fields => {
@@ -204,6 +253,54 @@ const findTargetByName = name => {
     rebuildTargetIndex();
     return state.targetByName.get(name) || null;
 };
+
+/*
+ * Costumes and sounds travel with an identity, not just a position.
+ *
+ * An index is a fact about one editor's list at one moment. A partner adding a
+ * costume, deleting one, or dragging one up the strip renumbers everything
+ * below it — so "delete costume 3", sent when 3 was the hat, arrives at a peer
+ * where 3 is the whole drawing. Blocks learned this already and route by sprite
+ * name; this is the same lesson for the two lists that never got it.
+ *
+ * The index still travels, as a hint: it settles which one was meant when a
+ * costume has been duplicated and the names and assets are identical.
+ */
+const costumeIdent = (targetName, index) => {
+    const t = findTargetByName(targetName);
+    const c = t && t.getCostumes()[index];
+    return c ? {name: c.name, assetId: c.assetId || c.md5 || null} : null;
+};
+
+const soundIdent = (targetName, index) => {
+    const t = findTargetByName(targetName);
+    const s = t && t.getSounds()[index];
+    return s ? {name: s.name, assetId: s.assetId || s.md5 || null} : null;
+};
+
+/* Where the sender's item lives in OUR list. -1 means "not here" — which is an
+ * answer, and a better one than acting on whatever is sitting at that index. */
+const resolveIndex = (list, index, ident) => {
+    if (!list || !list.length) return -1;
+    if (!ident) return (index >= 0 && index < list.length) ? index : -1;
+    const idOf = it => it.assetId || it.md5 || null;
+    const at = list[index];
+    // The hinted position, when it still holds what the sender was pointing at.
+    if (at && at.name === ident.name && (!ident.assetId || idOf(at) === ident.assetId)) return index;
+    if (ident.assetId) {
+        for (let i = 0; i < list.length; i++) {
+            if (idOf(list[i]) === ident.assetId && list[i].name === ident.name) return i;
+        }
+    }
+    for (let i = 0; i < list.length; i++) {
+        if (list[i].name === ident.name) return i;
+    }
+    return -1;
+};
+
+const resolveCostume = (target, msg, index) =>
+    resolveIndex(target.getCostumes(), index, msg.ident);
+const resolveSound = (target, msg) => resolveIndex(target.getSounds(), msg.index, msg.ident);
 
 // Blockly event JSON -> the shape scratch-vm's blocklyListen/adapter expects.
 const jsonToVmEvent = json => {
@@ -326,13 +423,25 @@ const sendSnapshotNow = async cacheOnly => {
     }
 };
 
+/*
+ * A debounce re-armed by every edit never fires while the editing continues,
+ * and this debounce guards the ONLY path by which work reaches disk. A child
+ * who keeps painting, or keeps dragging blocks, without ever pausing the
+ * minimum wait is a child whose afternoon is not being saved — the same
+ * failure the cacheOnly path was added to fix, arriving through the timer
+ * instead of through the missing call. So the deferral has a ceiling: however
+ * busy it gets, a save goes out this often.
+ */
+const SNAPSHOT_MAX_WAIT_MS = 30000;
+
 const scheduleSnapshot = cacheOnly => {
-    if (!state.active || state.applyingRemote) return;
+    if (!state.active || state.applyingRemote || !state.canEdit) return;
     if (!client.connected) state.offlineEdits = true;
     // A pending relay snapshot must not be downgraded by a later cacheOnly request.
     state.pendingSnapshotCacheOnly = state.snapshotTimer ?
         (state.pendingSnapshotCacheOnly && cacheOnly === true) :
         cacheOnly === true;
+    if (!state.snapshotTimer) state.snapshotDeferredSince = Date.now();
     clearTimeout(state.snapshotTimer);
     // cacheOnly snapshots only refresh the server's copy for late joiners — the
     // live edits already reached everyone. Zipping the whole project is the
@@ -340,8 +449,10 @@ const scheduleSnapshot = cacheOnly => {
     const wait = state.pendingSnapshotCacheOnly ?
         Math.max(1500, 20000 - (Date.now() - (state.lastCacheSnapAt || 0))) :
         1000;
+    const remaining = (state.snapshotDeferredSince + SNAPSHOT_MAX_WAIT_MS) - Date.now();
     state.snapshotTimer = setTimeout(() => {
         state.snapshotTimer = null;
+        state.snapshotDeferredSince = 0;
         const flag = state.pendingSnapshotCacheOnly;
         // Don't zip while the tab is backgrounded — visibility handler resumes.
         if (typeof document !== 'undefined' && document.hidden) {
@@ -353,7 +464,7 @@ const scheduleSnapshot = cacheOnly => {
         } else {
             sendSnapshotNow(flag);
         }
-    }, wait);
+    }, Math.max(0, Math.min(wait, remaining)));
 };
 
 if (typeof document !== 'undefined') {
@@ -475,7 +586,12 @@ const applySnapshot = async msg => {
     }
     // Reconnects re-deliver the room snapshot — if it's the state we already
     // have (usually our own), don't reload the project out from under us.
-    if (msg.b64 === state.lastSnapshotB64) {
+    // Unless we asked for this one: a resync request means live edits went
+    // missing since that snapshot, so "we already have it" is exactly the
+    // belief that is wrong, and skipping would leave the divergence in place.
+    if (state.forceApplyNextSnapshot) {
+        state.forceApplyNextSnapshot = false;
+    } else if (msg.b64 === state.lastSnapshotB64) {
         if (typeof msg.version === 'number') state.roomVersion = msg.version;
         return;
     }
@@ -573,7 +689,7 @@ const wrapTargeted = (vm, method, buildMsg) => {
     if (typeof vm[method] !== 'function') return;
     const original = vm[method].bind(vm);
     vm[method] = (...args) => {
-        const msg = (state.active && !state.applyingRemote) ? buildMsg(...args) : null;
+        const msg = canWrite() ? buildMsg(...args) : null;
         const result = original(...args);
         if (msg) {
             // Renames invalidate the name→target index used by remote applies.
@@ -612,7 +728,7 @@ const wrapVm = vm => {
         if (typeof vm[method] !== 'function') return;
         const original = vm[method].bind(vm);
         vm[method] = (...args) => {
-            const wasRemote = state.applyingRemote || !state.active;
+            const wasRemote = !canWrite();
             const before = wasRemote ? null : new Set(
                 vm.runtime.targets.filter(t => t.isOriginal).map(t => t.getName()));
             const result = original(...args);
@@ -639,7 +755,7 @@ const wrapVm = vm => {
 
     const originalDeleteSprite = vm.deleteSprite.bind(vm);
     vm.deleteSprite = targetId => {
-        const wasRemote = state.applyingRemote || !state.active;
+        const wasRemote = !canWrite();
         const name = targetNameById(targetId);
         const result = originalDeleteSprite(targetId);
         if (!wasRemote && name) {
@@ -656,7 +772,7 @@ const wrapVm = vm => {
         if (typeof vm[method] !== 'function') return;
         const original = vm[method].bind(vm);
         vm[method] = (md5ext, costumeObject, optTargetId, optVersion) => {
-            const wasRemote = state.applyingRemote || !state.active;
+            const wasRemote = !canWrite();
             const result = original(md5ext, costumeObject, optTargetId, optVersion);
             if (!wasRemote) {
                 Promise.resolve(result).then(() => {
@@ -692,7 +808,7 @@ const wrapVm = vm => {
 
     const originalAddSound = vm.addSound.bind(vm);
     vm.addSound = (soundObject, optTargetId) => {
-        const wasRemote = state.applyingRemote || !state.active;
+        const wasRemote = !canWrite();
         const result = originalAddSound(soundObject, optTargetId);
         if (!wasRemote) {
             Promise.resolve(result).then(() => {
@@ -734,7 +850,7 @@ const wrapVm = vm => {
 
     const originalGreenFlag = vm.greenFlag.bind(vm);
     vm.greenFlag = (...args) => {
-        if (state.active && !state.applyingRemote) {
+        if (canWrite()) {
             client.send({type: 'vm-action', action: 'greenFlag'});
             sendPresence({status: '▶ playing'});
         }
@@ -743,7 +859,7 @@ const wrapVm = vm => {
 
     const originalStopAll = vm.stopAll.bind(vm);
     vm.stopAll = (...args) => {
-        if (state.active && !state.applyingRemote) {
+        if (canWrite()) {
             client.send({type: 'vm-action', action: 'stopAll'});
             sendPresence({status: 'here'});
         }
@@ -765,7 +881,7 @@ const wrapVm = vm => {
         // While the project is RUNNING each machine simulates independently —
         // syncing positions mid-game makes the simulations fight (rubber-band
         // "lag"). Positions converge naturally when play stops.
-        if (state.active && !state.applyingRemote && !state.projectRunning && hasPeers()) {
+        if (canWrite() && !state.projectRunning && hasPeers()) {
             const target = editingTargetName();
             if (target) {
                 state.pendingSpriteInfo = {type: 'sprite-info', target, data};
@@ -784,25 +900,44 @@ const wrapVm = vm => {
         const target = targetNameById(targetId);
         return target ? {target, newName} : null;
     });
-    wrapTargeted(vm, 'renameCostume', (index, newName) =>
-        ({target: editingTargetName(), index, newName}));
-    wrapTargeted(vm, 'renameSound', (index, newName) =>
-        ({target: editingTargetName(), index, newName}));
+    wrapTargeted(vm, 'renameCostume', (index, newName) => {
+        const target = editingTargetName();
+        return {target, index, newName, ident: costumeIdent(target, index)};
+    });
+    wrapTargeted(vm, 'renameSound', (index, newName) => {
+        const target = editingTargetName();
+        return {target, index, newName, ident: soundIdent(target, index)};
+    });
     wrapTargeted(vm, 'reorderCostume', (targetId, from, to) => {
         const target = targetNameById(targetId);
-        return target ? {target, from, to} : null;
+        // `to` is a destination slot and stays positional — there is nothing
+        // else it could be — but `from` names the costume being moved, so at
+        // least the right one moves.
+        return target ? {target, from, to, ident: costumeIdent(target, from)} : null;
     });
     wrapTargeted(vm, 'reorderSound', (targetId, from, to) => {
         const target = targetNameById(targetId);
-        return target ? {target, from, to} : null;
+        return target ? {target, from, to, ident: soundIdent(target, from)} : null;
     });
     wrapTargeted(vm, 'reorderTarget', (from, to) => ({from, to}));
     // Delete/duplicate of costumes & sounds operate on vm.editingTarget by
     // index — tiny targeted messages, no zips.
-    wrapTargeted(vm, 'deleteCostume', index => ({target: editingTargetName(), index}));
-    wrapTargeted(vm, 'duplicateCostume', index => ({target: editingTargetName(), index}));
-    wrapTargeted(vm, 'deleteSound', index => ({target: editingTargetName(), index}));
-    wrapTargeted(vm, 'duplicateSound', index => ({target: editingTargetName(), index}));
+    wrapTargeted(vm, 'deleteCostume', index => {
+        const target = editingTargetName();
+        return {target, index, ident: costumeIdent(target, index)};
+    });
+    wrapTargeted(vm, 'duplicateCostume', index => {
+        const target = editingTargetName();
+        return {target, index, ident: costumeIdent(target, index)};
+    });
+    wrapTargeted(vm, 'deleteSound', index => {
+        const target = editingTargetName();
+        return {target, index, ident: soundIdent(target, index)};
+    });
+    wrapTargeted(vm, 'duplicateSound', index => {
+        const target = editingTargetName();
+        return {target, index, ident: soundIdent(target, index)};
+    });
 
     // Live paint sync — vector strokes relay per edit-commit; bitmap edits are
     // heavier (raw pixels) so they relay with a trailing debounce. Both also
@@ -824,15 +959,20 @@ const wrapVm = vm => {
         // from (the last export/apply for this costume, or the current asset).
         let target = null;
         let prev = null;
-        if (state.active && !state.applyingRemote) {
+        let ident = null;
+        if (canWrite()) {
             target = editingTargetName();
             if (target) {
+                // Captured before the write, like `prev`: afterwards the asset
+                // id belongs to the stroke we are about to send, which is not
+                // what the receiver is holding.
+                ident = costumeIdent(target, costumeIndex);
                 prev = state.paintBase.get(`${target}|${costumeIndex}|svg`);
                 if (prev == null) prev = costumeSvgText(target, costumeIndex);
             }
         }
         const result = originalUpdateSvg(costumeIndex, svg, rotationCenterX, rotationCenterY);
-        if (state.active && !state.applyingRemote && target) {
+        if (canWrite() && target) {
             state.paintBase.set(`${target}|${costumeIndex}|svg`, svg);
             trimPaintBase();
             const msg = {
@@ -840,6 +980,7 @@ const wrapVm = vm => {
                 action: 'updateSvg',
                 target,
                 costumeIndex,
+                ident,
                 svg,
                 rotationCenterX,
                 rotationCenterY
@@ -903,10 +1044,18 @@ const wrapVm = vm => {
         }
     };
 
+    // Every costume touched inside the debounce window, not just the last one.
+    const flushPendingBitmaps = () => {
+        state.bitmapTimer = null;
+        const batch = [...state.pendingBitmaps.values()];
+        state.pendingBitmaps.clear();
+        for (const p of batch) sendBitmap(p).catch(() => {});
+    };
+
     const originalUpdateBitmap = vm.updateBitmap.bind(vm);
     vm.updateBitmap = (costumeIndex, bitmap, rotationCenterX, rotationCenterY, bitmapResolution) => {
         const result = originalUpdateBitmap(costumeIndex, bitmap, rotationCenterX, rotationCenterY, bitmapResolution);
-        if (state.active && !state.applyingRemote) {
+        if (canWrite()) {
             const target = editingTargetName();
             if (target && hasPeers()) {
                 // Copy the pixel view only — bitmap.data.buffer may be a larger
@@ -916,13 +1065,14 @@ const wrapVm = vm => {
                     pixels.byteOffset,
                     pixels.byteOffset + pixels.byteLength
                 ));
-                state.pendingBitmap = {
+                state.pendingBitmaps.set(`${target}|${costumeIndex}`, {
                     pixels: pixelCopy,
                     meta: {
                         type: 'vm-action',
                         action: 'updateBitmap',
                         target,
                         costumeIndex,
+                        ident: costumeIdent(target, costumeIndex),
                         width: bitmap.width,
                         height: bitmap.height,
                         sourceWidth: bitmap.sourceWidth,
@@ -931,13 +1081,9 @@ const wrapVm = vm => {
                         rotationCenterY,
                         bitmapResolution
                     }
-                };
+                });
                 clearTimeout(state.bitmapTimer);
-                state.bitmapTimer = setTimeout(() => {
-                    const p = state.pendingBitmap;
-                    state.pendingBitmap = null;
-                    if (p) sendBitmap(p).catch(() => {});
-                }, 250);
+                state.bitmapTimer = setTimeout(flushPendingBitmaps, 250);
                 sendPresence({status: '🎨 painting', sprite: target});
             }
             scheduleSnapshot(true);
@@ -963,18 +1109,27 @@ const wrapVm = vm => {
         if (state.active && !state.applyingRemote) sendPresence({status: 'here'});
     });
 
-    /*
-     * Frame interpolation: render at the display's refresh rate while game
-     * logic keeps its designed tick (30fps for most Scratch projects) — smooth
-     * motion without changing gameplay speed. On by default here because most
-     * projects look better for it.
-     *
-     * Loading a project resets runtime options, so it has to be re-asserted
-     * after every load — but re-asserting `true` meant the Settings checkbox
-     * could not turn it off: the next sync silently switched it back on, and
-     * in a live room that is every few seconds. Re-assert the WANTED value
-     * instead, and treat any call to setInterpolation as the new want.
-     */
+    vm.runtime.on('PROJECT_LOADED', rebuildTargetIndex);
+};
+
+/*
+ * Frame interpolation: render at the display's refresh rate while game logic
+ * keeps its designed tick (30fps for most Scratch projects) — smooth motion
+ * without changing gameplay speed. On by default because most projects look
+ * better for it.
+ *
+ * Loading a project resets runtime options, so it has to be re-asserted after
+ * every load — but re-asserting `true` meant the Settings checkbox could not
+ * turn it off: the next sync silently switched it back on, and in a live room
+ * that is every few seconds. Re-assert the WANTED value instead, and treat any
+ * call to setInterpolation as the new want.
+ *
+ * Lives outside wrapVm because wrapVm only runs for someone who joined a room.
+ * Editing alone is the same editor and deserves the same default; having it
+ * depend on whether you happened to open a room link was an accident of where
+ * the code sat.
+ */
+const installInterpolation = vm => {
     const applyInterpolation = on => {
         try {
             vm.setInterpolation(on);
@@ -996,11 +1151,7 @@ const wrapVm = vm => {
     }
 
     applyInterpolation(state.wantInterpolation);
-
-    vm.runtime.on('PROJECT_LOADED', () => {
-        rebuildTargetIndex();
-        applyInterpolation(state.wantInterpolation);
-    });
+    vm.runtime.on('PROJECT_LOADED', () => applyInterpolation(state.wantInterpolation));
 };
 
 // ------------------------------------------------ outgoing: block events ---
@@ -1017,7 +1168,7 @@ const flushBlockMoves = () => {
 };
 
 const onWorkspaceEvent = e => {
-    if (!state.active || state.applyingRemote || state.workspaceSuspended) return;
+    if (!canWrite() || state.workspaceSuspended) return;
     if (e.type === 'ui') return;
     if (!RELAYED_BLOCK_EVENTS.has(e.type)) return;
     if (!client.connected) state.offlineEdits = true;
@@ -1099,6 +1250,29 @@ const flushPendingPaint = () => {
     for (let i = 0; i < queued.length; i++) applyVmAction(queued[i]);
 };
 
+/*
+ * Ask the room for a state everyone agrees on.
+ *
+ * Every buffer in here has a cap, and hitting one means relayed edits were
+ * thrown away — an edit nothing will ever resend, because the sender has no
+ * idea it did not arrive. Left alone that is permanent, invisible divergence:
+ * two people looking at the same room and seeing different projects. The
+ * snapshot that comes back costs a reload, which is cheap next to that.
+ *
+ * Rate limited because the causes come in bursts and the answer is the whole
+ * project.
+ */
+const RESYNC_COOLDOWN_MS = 10000;
+const requestResync = why => {
+    if (!state.active) return;
+    if (Date.now() - (state.lastResyncAt || 0) < RESYNC_COOLDOWN_MS) return;
+    state.lastResyncAt = Date.now();
+    state.forceApplyNextSnapshot = true;
+    client.send({type: 'resync'});
+    // eslint-disable-next-line no-console
+    console.warn('[collab] dropped relayed edits, resyncing:', why);
+};
+
 // A tab left open for a day would otherwise only learn about a deploy by
 // reconnecting. Cheap enough at this interval to just ask.
 const VERSION_POLL_MS = 5 * 60 * 1000;
@@ -1141,9 +1315,13 @@ const housekeep = () => {
     }
 
     // Drop orphaned block-events that never found a sprite (stale after 8s).
+    // Expiring one is still losing an edit — the sprite it belonged to never
+    // showed up — so say so and get a clean copy rather than carry the hole.
     if (state.orphanBlockEvents.length) {
         const cutoff = Date.now() - 8000;
-        state.orphanBlockEvents = state.orphanBlockEvents.filter(m => (m._queuedAt || 0) > cutoff);
+        const kept = state.orphanBlockEvents.filter(m => (m._queuedAt || 0) > cutoff);
+        if (kept.length !== state.orphanBlockEvents.length) requestResync('orphan block-events expired');
+        state.orphanBlockEvents = kept;
     }
 
     if (!state.cursorShown) return;
@@ -1169,11 +1347,21 @@ const startHousekeeping = () => {
     state.housekeepTimer = setInterval(housekeep, 1000);
 };
 
-const _stopHousekeeping = () => {
+/*
+ * The room is over for this tab — kicked, replaced by another tab, refused.
+ * The socket is already closed for good by the time this runs; without it the
+ * 1Hz housekeeper kept polling and every edit kept queueing messages for a
+ * connection that is never coming back.
+ */
+const endSession = () => {
+    state.active = false;
     if (state.housekeepTimer) {
         clearInterval(state.housekeepTimer);
         state.housekeepTimer = null;
     }
+    clearTimeout(state.snapshotTimer);
+    state.snapshotTimer = null;
+    overlay.setConnected(false);
 };
 
 // ------------------------------------------------- incoming: application ---
@@ -1182,6 +1370,7 @@ const applyBlockEvent = msg => {
     if (state.snapshotLoading) {
         // Don't apply into a half-loaded project — replay after the load.
         if (state.queuedBlockEvents.length < 500) state.queuedBlockEvents.push(msg);
+        else requestResync('block-event replay queue full');
         return;
     }
     const target = findTargetByName(msg.target);
@@ -1190,6 +1379,8 @@ const applyBlockEvent = msg => {
         if (state.orphanBlockEvents.length < 200) {
             msg._queuedAt = Date.now();
             state.orphanBlockEvents.push(msg);
+        } else {
+            requestResync('orphan block-event queue full');
         }
         return;
     }
@@ -1320,26 +1511,26 @@ const applyVmAction = msg => {
                 state.vm.renameSprite(target.id, msg.newName);
                 rebuildTargetIndex();
             }
-        } else if (msg.action === 'renameCostume' || msg.action === 'renameSound') {
+        } else if (msg.action === 'renameCostume' || msg.action === 'renameSound' ||
+            msg.action === 'deleteCostume' || msg.action === 'duplicateCostume' ||
+            msg.action === 'deleteSound' || msg.action === 'duplicateSound') {
             // these operate on vm.editingTarget — impersonate briefly
             const target = findTargetByName(msg.target);
-            if (target) {
+            const isSound = msg.action.endsWith('Sound');
+            const index = target ?
+                (isSound ? resolveSound(target, msg) : resolveCostume(target, msg, msg.index)) : -1;
+            // Not here: the costume was already deleted, or renamed out from
+            // under this message. Doing nothing is right — falling back to the
+            // raw index is how the wrong one gets deleted.
+            if (target && index >= 0) {
                 const prev = state.vm.editingTarget;
                 state.vm.editingTarget = target;
                 try {
-                    state.vm[msg.action](msg.index, msg.newName);
-                } finally {
-                    state.vm.editingTarget = prev;
-                }
-            }
-        } else if (msg.action === 'deleteCostume' || msg.action === 'duplicateCostume' ||
-            msg.action === 'deleteSound' || msg.action === 'duplicateSound') {
-            const target = findTargetByName(msg.target);
-            if (target) {
-                const prev = state.vm.editingTarget;
-                state.vm.editingTarget = target;
-                try {
-                    state.vm[msg.action](msg.index);
+                    if (msg.action === 'renameCostume' || msg.action === 'renameSound') {
+                        state.vm[msg.action](index, msg.newName);
+                    } else {
+                        state.vm[msg.action](index);
+                    }
                 } finally {
                     state.vm.editingTarget = prev;
                 }
@@ -1359,7 +1550,12 @@ const applyVmAction = msg => {
             applySoundAdd(msg);
         } else if (msg.action === 'reorderCostume' || msg.action === 'reorderSound') {
             const target = findTargetByName(msg.target);
-            if (target) state.vm[msg.action](target.id, msg.from, msg.to);
+            const list = target &&
+                (msg.action === 'reorderSound' ? target.getSounds() : target.getCostumes());
+            const from = list ? resolveIndex(list, msg.from, msg.ident) : -1;
+            if (from >= 0) {
+                state.vm[msg.action](target.id, from, Math.min(Math.max(msg.to, 0), list.length - 1));
+            }
         } else if (msg.action === 'reorderTarget') {
             state.vm.reorderTarget(msg.from, msg.to);
         } else if (msg.action === 'updateSvg' || msg.action === 'updateBitmap') {
@@ -1385,10 +1581,16 @@ const applyVmAction = msg => {
     }
 };
 
-const applyRemoteSvg = msg => {
+const applyRemoteSvg = incoming => {
     // _updateSvg takes the costume object directly — no editingTarget games.
-    const target = findTargetByName(msg.target);
-    const costume = target && target.getCostumes()[msg.costumeIndex];
+    const target = findTargetByName(incoming.target);
+    // Their index, our list. Painting the costume that happens to sit at that
+    // number is how a partner's drawing ends up on somebody else's sprite.
+    const index = target ? resolveCostume(target, incoming, incoming.costumeIndex) : -1;
+    if (index < 0) return;
+    const msg = index === incoming.costumeIndex ?
+        incoming : Object.assign({}, incoming, {costumeIndex: index});
+    const costume = target.getCostumes()[index];
     if (!costume) return;
     let final = {svg: msg.svg, rotationCenterX: msg.rotationCenterX, rotationCenterY: msg.rotationCenterY};
     if (msg.delta && costume.dataFormat === 'svg' && costume.asset) {
@@ -1416,17 +1618,25 @@ const applyRemoteSvg = msg => {
         action: 'updateSvg',
         target: msg.target,
         costumeIndex: msg.costumeIndex,
+        // Kept so the re-apply after a snapshot load resolves the costume the
+        // same way this did, on a list the load has very likely renumbered.
+        ident: msg.ident,
         svg: final.svg,
         rotationCenterX: final.rotationCenterX,
         rotationCenterY: final.rotationCenterY
     });
 };
 
-const commitRemoteBitmap = (msg, pixels) => {
+const commitRemoteBitmap = (incoming, pixels) => {
     // Re-resolve the costume — PNG decode is async and the project may have
-    // reloaded (snapshot) between arrival and decode.
-    const target = findTargetByName(msg.target);
-    const costume = target && target.getCostumes()[msg.costumeIndex];
+    // reloaded (snapshot) between arrival and decode, which moves costumes as
+    // readily as a partner's edit does.
+    const target = findTargetByName(incoming.target);
+    const index = target ? resolveCostume(target, incoming, incoming.costumeIndex) : -1;
+    if (index < 0) return;
+    const msg = index === incoming.costumeIndex ?
+        incoming : Object.assign({}, incoming, {costumeIndex: index});
+    const costume = target.getCostumes()[index];
     if (!costume) return;
     // The shadow is the freshest full pixels for this costume: patch base for
     // future merges AND the snapshot-reapply source.
@@ -1440,6 +1650,7 @@ const commitRemoteBitmap = (msg, pixels) => {
         useShadow: true,
         target: msg.target,
         costumeIndex: msg.costumeIndex,
+        ident: msg.ident || costumeIdent(msg.target, index),
         width: msg.width,
         height: msg.height,
         sourceWidth: msg.sourceWidth,
@@ -1494,7 +1705,14 @@ const applyBitmapPatch = async msg => {
     commitRemoteBitmap(msg, base);
 };
 
-const applyRemoteBitmap = msg => {
+const applyRemoteBitmap = incoming => {
+    const target = findTargetByName(incoming.target);
+    const index = target ? resolveCostume(target, incoming, incoming.costumeIndex) : -1;
+    if (index < 0) return;
+    // Rewritten once here so every path below — patch, png, raw, and the
+    // shadow re-apply after a snapshot — works in OUR numbering.
+    const msg = index === incoming.costumeIndex ?
+        incoming : Object.assign({}, incoming, {costumeIndex: index});
     if (msg.useShadow) {
         // Snapshot-reapply path: restore from the local shadow.
         const shadow = state.paintBase.get(`${msg.target}|${msg.costumeIndex}|bmp`);
@@ -1664,6 +1882,7 @@ const wireSocket = () => {
             isReconnect ? '🔌 Reconnected!' : `Welcome, ${overlay.self.name}! Room: ${msg.title || msg.room}`,
             msg.color
         );
+        applyEditability();
         if (!state.canEdit) overlay.toast('👀 You are watching — ask the owner for edit access', '#8a8fa3');
         rebuildTargetIndex();
         state.roomVersion = typeof msg.version === 'number' ? msg.version : 0;
@@ -1718,20 +1937,58 @@ const wireSocket = () => {
     client.on('room-renamed', msg => {
         applyRoomTitle(msg.title);
     });
+    /*
+     * Every refusal the server sends has to arrive somewhere a person can see
+     * it. This handler used to know three of them and drop the rest on the
+     * floor — including `read-only`, which is sent for every edit a viewer
+     * makes, and `bad-snapshot`, which means the project is no longer being
+     * saved at all. Both of those end in lost work, and both were silent.
+     */
     client.on('error', msg => {
         if (msg.error === 'session-replaced') {
             client.disconnect();
+            endSession();
             overlay.toast('👀 Opened in another tab — disconnected here', '#ff8c00');
         } else if (msg.error === 'room-full') {
             client.disconnect();
+            endSession();
             overlay.toast('🚫 Room is full', '#e8386d');
         } else if (msg.error === 'no-access') {
             client.disconnect();
+            endSession();
             overlay.toast('🔒 Access denied', '#e8386d');
+        } else if (msg.error === 'read-only') {
+            // The gate below should mean this never fires. If it does, the
+            // editor believes it may write and the server disagrees — so
+            // believe the server, and stop pretending the edits are landing.
+            if (state.canEdit) {
+                state.canEdit = false;
+                applyEditability();
+            }
+        } else if (msg.error === 'bad-snapshot') {
+            // Almost always the size cap. Nothing this tab does will save
+            // until the project gets smaller, so this stays on screen.
+            overlay.banner(
+                'This project is too big to save. Delete a few costumes or sounds to fix it.',
+                {kind: 'update'}
+            );
+        } else if (msg.error) {
+            overlay.toast(`⚠️ ${msg.error.replace(/-/g, ' ')}`, '#e8386d');
         }
+    });
+    client.on('queue-overflow', () => {
+        // Reliable messages had to be dropped while the socket was down, so
+        // our copy and the room's have diverged in a way neither side can
+        // reconstruct. Treat it exactly like editing offline: on reconnect the
+        // project is either pushed (nobody else there) or rescued into the
+        // library before theirs is accepted. Both keep the work.
+        client.droppedReliable = false;
+        state.offlineEdits = true;
+        state.forceNextSnapshot = true;
     });
     client.on('kicked', msg => {
         client.disconnect();
+        endSession();
         overlay.toast(msg.reason === 'room-deleted' ?
             '🚪 This room was deleted' : '🔒 Your access to this room changed', '#e8386d');
     });
@@ -1789,6 +2046,7 @@ const init = async (vm, initHooks) => {
     state.initialized = true;
     state.vm = vm;
     installNetBridge(); // idempotent — already installed at module load
+    installInterpolation(vm); // room or not — it is the same editor
 
     // Register before the login modal so we can't miss the event while the user types.
     const projectLoaded = new Promise(resolve => vm.runtime.once('PROJECT_LOADED', resolve));
@@ -1817,18 +2075,29 @@ const attachWorkspace = (workspace, ScratchBlocks) => {
     workspace.addChangeListener(onWorkspaceEvent);
     const svg = workspace.getParentSvg();
     if (svg) svg.addEventListener('mousemove', onWorkspaceMouseMove);
+    // A workspace can be built after the welcome that decided we are a viewer.
+    applyEditability();
 };
 
-// blocks.jsx rebuilds the whole workspace from VM state on workspaceUpdate
-// (sprite switch, project load). Those synthetic create/delete events must not
-// be rebroadcast. Blockly fires listeners from a setTimeout(0) queue, so the
-// resume must be deferred past the queue drain (which was scheduled first).
+/*
+ * blocks.jsx rebuilds the whole workspace from VM state on workspaceUpdate
+ * (sprite switch, project load). Those synthetic create/delete events must not
+ * be rebroadcast. Blockly fires listeners from a setTimeout(0) queue, so the
+ * resume must be deferred past the queue drain (which was scheduled first).
+ *
+ * Counted, for the reason applyingRemote is counted. Two rebuilds can be in
+ * flight at once — a socket message landing between one rebuild's drain and
+ * its resume is enough — and with a boolean the first resume clears the
+ * suspension while the second rebuild's synthetic events are still queued.
+ * Those events then read as this user's own edits and go out to the room:
+ * the echo loop, by another door.
+ */
 const suspendWorkspaceEvents = () => {
-    state.workspaceSuspended = true;
+    state.workspaceSuspended++;
 };
 const resumeWorkspaceEvents = () => {
     setTimeout(() => {
-        state.workspaceSuspended = false;
+        if (state.workspaceSuspended > 0) state.workspaceSuspended--;
     }, 0);
 };
 

@@ -7,6 +7,26 @@ const LOSSY = new Set(['cursor', 'presence', 'sprite-info']);
 const MAX_QUEUE = 80;
 const MAX_BUFFERED = 2 * 1024 * 1024; // ~2MB socket buffer → start dropping lossy
 
+/*
+ * Liveness. The server pings every 30s and drops sockets that stop answering,
+ * so IT always notices a dead client. The reverse was never true: a socket
+ * whose path dies without a close frame — phone leaving wifi, NAT dropping the
+ * mapping, a laptop lid — stays readyState OPEN in the browser forever. Every
+ * edit after that goes into a socket that reaches nobody, while the presence
+ * dot stays green. So the client keeps its own clock: a small ping on an idle
+ * connection, and a reconnect if nothing at all comes back.
+ *
+ * Browsers don't surface protocol-level pongs to JS, which is why this is an
+ * application ping rather than a "no frames in 90s" rule — an idle-but-healthy
+ * room sends no traffic for minutes and must not be torn down for it.
+ */
+const HEARTBEAT_MS = 25000;
+const SILENCE_LIMIT_MS = 70000; // ~2 missed heartbeats
+// A socket can sit in CONNECTING indefinitely (this is what a sleeping laptop
+// wakes up to). resumeIfNeeded deliberately won't touch a handshake in flight,
+// so the handshake needs its own deadline or nothing ever replaces it.
+const CONNECT_TIMEOUT_MS = 12000;
+
 class CollabClient {
     constructor () {
         this.ws = null;
@@ -19,6 +39,12 @@ class CollabClient {
         this._reconnectTimer = null;
         this._queue = []; // reliable messages waiting for an open socket
         this._openGen = 0; // ignore stale socket callbacks after supersede
+        this._connectTimer = null;
+        this._heartbeatTimer = null;
+        this._lastInbound = 0;
+        // Set when the reliable queue had to drop something. Whoever is
+        // listening owes the room a full resync — see 'queue-overflow'.
+        this.droppedReliable = false;
     }
 
     on (type, cb) {
@@ -42,6 +68,7 @@ class CollabClient {
         this.session = {url, room, name};
         this._closedByUser = false;
         this._backoff = 1000;
+        this._startHeartbeat();
         this._open();
     }
 
@@ -52,9 +79,47 @@ class CollabClient {
         }
     }
 
+    _clearConnectTimer () {
+        if (this._connectTimer) {
+            clearTimeout(this._connectTimer);
+            this._connectTimer = null;
+        }
+    }
+
+    _startHeartbeat () {
+        if (this._heartbeatTimer) return;
+        this._heartbeatTimer = setInterval(() => this._heartbeat(), HEARTBEAT_MS);
+    }
+
+    _stopHeartbeat () {
+        if (this._heartbeatTimer) {
+            clearInterval(this._heartbeatTimer);
+            this._heartbeatTimer = null;
+        }
+    }
+
+    /* Nothing heard back for two heartbeats: the socket says OPEN but there is
+     * nobody on the other end of it. Replace it rather than keep writing into
+     * a pipe that goes nowhere. */
+    _heartbeat () {
+        if (this._closedByUser || !this.session) return;
+        if (!this.ws || this.ws.readyState !== 1) return;
+        if (this._lastInbound && Date.now() - this._lastInbound > SILENCE_LIMIT_MS) {
+            this.connected = false;
+            this._emit('disconnected', {});
+            this._backoff = 1000;
+            this._open();
+            return;
+        }
+        try {
+            this.ws.send(JSON.stringify({type: 'ping'}));
+        } catch (e) { /* the close handler will pick this up */ }
+    }
+
     _open () {
         if (!this.session || this._closedByUser) return;
         this._clearReconnect();
+        this._clearConnectTimer();
 
         // Supersede any in-flight socket so its onclose can't double-reconnect.
         const gen = ++this._openGen;
@@ -78,9 +143,21 @@ class CollabClient {
             return;
         }
         this.ws = ws;
+        this._lastInbound = Date.now();
+        this._connectTimer = setTimeout(() => {
+            this._connectTimer = null;
+            if (gen !== this._openGen || !this.ws || this.ws.readyState !== 0) return;
+            // Still handshaking well past any reasonable round trip. Tear it
+            // down; the close path schedules the retry.
+            try {
+                this.ws.close();
+            } catch (e) { /* already dying */ }
+        }, CONNECT_TIMEOUT_MS);
 
         ws.onopen = () => {
             if (gen !== this._openGen) return;
+            this._clearConnectTimer();
+            this._lastInbound = Date.now();
             this._backoff = 1000;
             // Persistent device identity: token issued by the server on first
             // join, kept in localStorage — name-only login stays that simple.
@@ -94,12 +171,14 @@ class CollabClient {
         };
         ws.onmessage = evt => {
             if (gen !== this._openGen) return;
+            this._lastInbound = Date.now();
             let msg;
             try {
                 msg = JSON.parse(evt.data);
             } catch (e) {
                 return;
             }
+            if (msg.type === 'pong') return; // liveness only — nobody subscribes
             if (msg.type === 'welcome') {
                 this.connected = true;
                 this.me = {id: msg.id, color: msg.color};
@@ -114,6 +193,7 @@ class CollabClient {
         };
         ws.onclose = () => {
             if (gen !== this._openGen) return;
+            this._clearConnectTimer();
             const wasConnected = this.connected;
             this.connected = false;
             this.ws = null;
@@ -187,8 +267,15 @@ class CollabClient {
 
     _enqueue (data) {
         if (this._queue.length >= MAX_QUEUE) {
-            // Prefer keeping the newest reliable messages (latest block state wins).
+            // Prefer keeping the newest reliable messages (latest block state
+            // wins) — but say so. A dropped `create` with its later `move`
+            // kept is a peer that diverges permanently and never finds out;
+            // the listener answers this by forcing a full snapshot.
             this._queue.shift();
+            if (!this.droppedReliable) {
+                this.droppedReliable = true;
+                this._emit('queue-overflow', {});
+            }
         }
         this._queue.push(data);
     }
@@ -196,6 +283,8 @@ class CollabClient {
     disconnect () {
         this._closedByUser = true;
         this._clearReconnect();
+        this._clearConnectTimer();
+        this._stopHeartbeat();
         this._queue = [];
         this._openGen++;
         if (this.ws) {
