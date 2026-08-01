@@ -688,8 +688,24 @@ const applySnapshot = async msg => {
         // (cacheOnly: peers already have the paint live).
         if (reapplied) setTimeout(() => scheduleSnapshot(true), 0);
     } catch (e) {
+        /*
+         * A load that throws part-way leaves the worst possible state: targets
+         * installed from the project JSON, but assets and render skins missing
+         * behind them. The editor then looks *almost* right — sprite names, x/y
+         * and the panels are all there — while the stage and the sprite
+         * thumbnails are blank, and nothing on screen says why. Logging it was
+         * only ever a note to whoever had the console open.
+         *
+         * Ask for the project again (rate limited, and it forces the apply) and
+         * say so, so a half-loaded editor is a visible, self-correcting state
+         * rather than a silent one.
+         */
         // eslint-disable-next-line no-console
         console.error('[collab] failed to apply snapshot', e);
+        overlay.toast('⚠️ Could not load the project — retrying', '#f0912b');
+        // Declared below, like the rest of the mutually-referring handlers here.
+        // eslint-disable-next-line no-use-before-define
+        requestResync('snapshot load failed');
     } finally {
         // Same gate: this function is the only writer of snapshotLoading, and
         // it cannot be re-entered while the flag is up.

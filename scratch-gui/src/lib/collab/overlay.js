@@ -380,13 +380,22 @@ class Overlay {
      * has to act on or wait out — an update waiting to be picked up, a restart
      * in progress — where a message that faded after three seconds would just
      * mean nobody ever saw it. Pass null to clear.
+     *
+     * Because it does not go away, it cannot be an overlay. A fixed bar at
+     * top:0 sat on top of the menu bar for as long as the condition lasted, so
+     * a viewer permanently lost File/Edit and the project title — the banner
+     * hid the very controls it was telling them about. It takes its own space
+     * instead: the editor root is squeezed down by the bar's measured height.
      */
     banner (text, opts = {}) {
         if (this._banner) {
             this._banner.remove();
             this._banner = null;
         }
-        if (!text) return;
+        if (!text) {
+            this._offsetApp(0);
+            return;
+        }
         const bar = document.createElement('div');
         bar.style.cssText = [
             'position:fixed', 'top:0', 'left:0', 'right:0', 'z-index:99999',
@@ -409,6 +418,64 @@ class Overlay {
         }
         document.body.appendChild(bar);
         this._banner = bar;
+        this._offsetApp(bar.offsetHeight);
+
+        // The text wraps to two lines on a narrow window, and the height it
+        // wraps to is not knowable until it has. Re-measure rather than assume.
+        if (typeof ResizeObserver === 'function') {
+            this._bannerRO = this._bannerRO || new ResizeObserver(() => {
+                if (this._banner) this._offsetApp(this._banner.offsetHeight);
+            });
+            this._bannerRO.disconnect(); // one banner replacing another
+            this._bannerRO.observe(bar);
+        }
+    }
+
+    /*
+     * Squeeze the editor into what is left below the banner.
+     *
+     * The editor root (`#app`) holds a `position:absolute; top:0; height:100%`
+     * child, so it resolves against the nearest positioned ancestor. Making the
+     * root itself a positioned box inset from the top is therefore the whole
+     * fix — no !important fight with the CSS-module class names, and one
+     * element to put back. Modals portal to <body> and are untouched, which is
+     * right: a dialog should still cover the banner.
+     */
+    _offsetApp (height) {
+        const root = document.getElementById('app');
+        // Clearing a banner that was never up must not fire a resize: Blockly
+        // and the stage both re-measure on one, and `banner(null)` is called
+        // on every reconnect whether or not anything was showing.
+        if (!root || (!height && !this._appOffset)) return;
+        if (!this._appOffset) {
+            // getAttribute, not cssText: putting back exactly what was there
+            // (including "no style attribute at all") is the only restore that
+            // cannot leave the editor with styles it never asked for.
+            this._appOffset = {style: root.getAttribute('style')};
+        }
+        if (!height) {
+            if (this._appOffset.style === null) root.removeAttribute('style');
+            else root.setAttribute('style', this._appOffset.style);
+            this._appOffset = null;
+            if (this._bannerRO) this._bannerRO.disconnect();
+            window.dispatchEvent(new Event('resize'));
+            return;
+        }
+        root.style.position = 'fixed';
+        root.style.top = `${height}px`;
+        root.style.left = '0';
+        root.style.right = '0';
+        root.style.bottom = '0';
+        // Blockly measures its own canvas against the window and only re-reads
+        // on a resize event; without this the workspace keeps the pre-banner
+        // geometry and every block lands offset from the pointer.
+        window.dispatchEvent(new Event('resize'));
+    }
+
+    // How far down the page content starts — toasts stack under the banner
+    // rather than behind it.
+    _topInset () {
+        return this._banner ? this._banner.offsetHeight : 0;
     }
 
     // ---- toasts ----
@@ -425,7 +492,8 @@ class Overlay {
         t.appendChild(dot);
         t.appendChild(document.createTextNode(text));
         t.style.cssText = [
-            'position:fixed', 'top:60px', 'left:50%', 'transform:translateX(-50%)', 'z-index:99998',
+            'position:fixed', `top:${60 + this._topInset()}px`,
+            'left:50%', 'transform:translateX(-50%)', 'z-index:99998',
             'display:flex', 'align-items:center', 'gap:9px',
             'background:#161c36', 'color:#f2f4fb', 'padding:10px 18px', 'border-radius:14px',
             'border:1px solid rgba(255,255,255,.11)',

@@ -11,6 +11,34 @@ of work rather than just moving files.
 
 ## Unreleased
 
+### Fixed
+
+- **The "you are watching" banner no longer sits on top of the menu bar.** It
+  was a fixed bar at the top of the window, and unlike a toast it never goes
+  away — so for as long as you were a viewer it covered File, Edit, Addons, the
+  project name and Save. The banner hid the controls it was telling you about.
+  It takes its own space now: the editor root is inset by the bar's measured
+  height, re-measured when the text wraps on a narrow window, and a resize is
+  fired so Blockly re-reads its geometry rather than dropping blocks a banner's
+  height away from the pointer.
+
+- **Leaving a room hands the seat back before the next page asks who is in it.**
+  Browsers do close the socket when you navigate away, but on their own
+  schedule, and the dashboard fetches the room list immediately — so you could
+  walk out of a room and be told you were still in it. The client now closes on
+  `pagehide`, which puts the close frame ahead of that first request. The
+  session is kept rather than torn down, so a page restored from the bfcache
+  reconnects instead of coming back to a dead editor.
+
+- **A snapshot that fails to load says so instead of leaving a half-built
+  project on screen.** A load that throws part-way installs the targets from
+  the project JSON without the assets and render skins behind them, and the
+  result looks almost right: sprite names, coordinates and panels all present,
+  stage and sprite thumbnails blank, nothing saying why. That was a
+  `console.error` and nothing else. It now asks the room for the project again
+  — rate limited, and forced past the "same bytes" check — and tells the person
+  watching that it is retrying.
+
 ### Changed
 
 - A refusal in co-play chat now carries the server's warning with it, so the

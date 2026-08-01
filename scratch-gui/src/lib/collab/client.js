@@ -280,6 +280,32 @@ class CollabClient {
         this._queue.push(data);
     }
 
+    /*
+     * Leaving the page: hand the seat back NOW.
+     *
+     * A browser does close the socket when you navigate away, but it does it
+     * on its own schedule, and the page you land on fetches the room list
+     * immediately. That race is visible: you walk out of a room, the dashboard
+     * paints, and it says somebody is still in there — you. Closing here puts
+     * the close frame ahead of the next page's first request.
+     *
+     * Deliberately not `disconnect()`: the session is kept so a bfcache restore
+     * can reconnect instead of coming back to a dead editor.
+     */
+    closeForUnload () {
+        this._stopHeartbeat();
+        this._clearReconnect();
+        this._clearConnectTimer();
+        this._openGen++; // the onclose below must not schedule a reconnect
+        this.connected = false;
+        if (this.ws) {
+            try {
+                this.ws.close(1000, 'leaving');
+            } catch (e) { /* already dying */ }
+            this.ws = null;
+        }
+    }
+
     disconnect () {
         this._closedByUser = true;
         this._clearReconnect();
@@ -307,6 +333,13 @@ if (typeof document !== 'undefined') {
 }
 if (typeof window !== 'undefined') {
     window.addEventListener('online', () => client.resumeIfNeeded());
+    // pagehide, not beforeunload: it is the one that fires on mobile and on a
+    // bfcache freeze, which are exactly the exits that used to leave a ghost.
+    window.addEventListener('pagehide', () => client.closeForUnload());
+    // ...and the matching restore, since a frozen page gets no visibilitychange.
+    window.addEventListener('pageshow', e => {
+        if (e.persisted) client.resumeIfNeeded();
+    });
 }
 
 export default client;
